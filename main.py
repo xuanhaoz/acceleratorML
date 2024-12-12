@@ -9,7 +9,7 @@ import numpy as np
 from copy import deepcopy
 import utils
 
-latticeFile = './lattices/seed01_pyAT_postRFcorrection'
+latticeFile = './lattices/seed001_pyAT_postRFcorrection'
 with open(latticeFile,'rb') as fid:
     ring0 = pickle.load(fid)
 
