@@ -38,6 +38,7 @@ function createSeeds(nSeeds)
         fprintf('Processing seed %d...\n',seed);
         clear result
         runTime = tic;
+        shuffleRNG(seed);
 
         try 
             [~,results] = evalc('runSingleSeed(SC,''RM'',RM)');
