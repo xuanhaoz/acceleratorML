@@ -4,7 +4,9 @@ function createSeeds(nSeeds)
     addpath('responseMatrices');
 
     global plotFunctionFlag
+    global verbose
     plotFunctionFlag = 0;
+    verbose = 0;
 
     outdir = './seeds';
 
