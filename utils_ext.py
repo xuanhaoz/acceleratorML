@@ -155,12 +155,12 @@ def getBPMreading(ring,makePlot=0,use_guess=False):
         plt.legend(['BPMs','All eles'])
         plt.tight_layout()
 
-    print(f"""getBPMreading: 
-          checking closed took {check_closed - start} secs
-          getting BPM indices took {inds - check_closed} secs
-          finding orbit took {find_orbit - inds} secs
-          finding offset took {find_offset - find_orbit} secs
-          getting noise took {get_noise - find_offset} secs""")
+    #print(f"""getBPMreading: 
+    #      checking closed took {check_closed - start} secs
+    #      getting BPM indices took {inds - check_closed} secs
+    #      finding orbit took {find_orbit - inds} secs
+    #      finding offset took {find_offset - find_orbit} secs
+    #     getting noise took {get_noise - find_offset} secs""")
     return B,T
 
 # ------------------------------------------------
@@ -271,66 +271,83 @@ def initialiseNewSeed(ring,errorScale=1):
 
 # ------------------------------------------------
 # Multiprocessing helper functions
-import torch
-
 NAN_COST = 1
-def worker_set_corrector(cm, ring, hcm_sep, device):
-    hcm = cm[:hcm_sep]
-    vcm = cm[hcm_sep:]
-    ring = setCorrectorStrengths(ring, 'x', hcm, True)
-    ring = setCorrectorStrengths(ring, 'y', vcm, True)
-    
-    bpm, traj = getBPMreading(ring)
-    
-    cost = torch.tensor(traj, dtype=torch.float32, device=device)
-    cost = torch.linalg.vector_norm(cost, ord=2, dim=-1)
-
-    cost = torch.nan_to_num(cost, NAN_COST)
-    cost = torch.sum(torch.abs(cost))
-    bpm = torch.nan_to_num(torch.tensor(bpm, dtype=torch.float32, device=device), NAN_COST)
-    return ring, cost, bpm
-
-
-def update_ring(ring, cm, hcm_sep, nan_cost):
-    hcm = cm[:hcm_sep]
-    vcm = cm[hcm_sep:]
-    ring = setCorrectorStrengths(ring, 'x', hcm, True)
-    ring = setCorrectorStrengths(ring, 'y', vcm, True)
-
-    bpm, traj = getBPMreading(ring)
-
-    # currently using the raw euclidean distance to element centres as loss,
-    # maybe should square?
-    cost = np.linalg.norm(traj, axis=-1)
-    cost = np.nan_to_num(cost, copy=False, nan=nan_cost)
-    cost = np.sum(np.abs(cost))
-
-    bpm = np.nan_to_num(bpm, copy=False, nan=nan_cost)
-    return cost, bpm
 
 from multiprocessing.connection import Connection
-    
-def worker_process(ring: at.lattice.lattice_object.Lattice, conn: Connection):
-    hcm = getCorrectorStrengths(ring, 'x')
-    vcm = getCorrectorStrengths(ring, 'y') 
-    hcm_sep = len(hcm)
-    cm = np.append(hcm, vcm)
-    init_cm = cm.copy()
-    NAN_COST = 1
+import pickle
+class WorkerProcess():
 
-    while True:
-        # we receive a tuple of (command: str, data) from the parent process
-        command, data = conn.recv()
+    def __init__(self, path_str, seed, ds_size, conn: Connection, nan_cost: float, done_delta: float):
+        self.rng = np.random.default_rng(seed)
+        self.conn = conn
+        self.nan_cost = nan_cost
+        self.done_delta = done_delta
+        self.ds_size = ds_size
+        self.path_str = path_str
 
-        if command == "step":
-            cm += data
-            out = update_ring(ring, cm, hcm_sep, NAN_COST)
-            conn.send(out)
-        
-        elif command == "reset":
-            cm = init_cm.copy()
-            out = update_ring(ring, cm, hcm_sep, NAN_COST)
-            conn.send(out)
+        self.loop()
+
+    def loop(self):
+        while True:
+            # we receive a tuple of (command: str, data) from the parent process
+            command, data = self.conn.recv()
+
+            if command == "step":
+                self.cm += data
+                out = self.update_ring(self.cm)
+                done = out[2]
+                self.done = done
+                self.conn.send(out)
             
-        elif command == "ping":
-            conn.send("received")
+            elif command == "reset":
+                self.setup_ring()
+                out = self.update_ring(self.cm)
+                self.conn.send(out)
+
+            elif command == "maybe_reset":
+                if self.done.item() == True:
+                    self.setup_ring()
+                out = self.update_ring(self.cm)
+                self.conn.send(out)
+                
+            elif command == "ping":
+                self.conn.send("received")
+            
+            else:
+                self.conn.send("invalid command")
+
+    def get_next_ring(self):
+        lattice_file = self.path_str.format(x = self.rng.integers(1, self.ds_size + 1))
+        with open(lattice_file,'rb') as fid:
+            return pickle.load(fid)
+        
+    def setup_ring(self):
+        self.ring = self.get_next_ring()
+        hcm = getCorrectorStrengths(self.ring, 'x')
+        vcm = getCorrectorStrengths(self.ring, 'y') 
+        self.hcm_sep = len(hcm)
+        self.cm = np.append(hcm, vcm)
+        
+        _, traj = getBPMreading(self.ring)
+        self.done_threshold = np.mean(rms(traj)) - self.done_delta
+
+    def update_ring(self, cm):
+        hcm = cm[:self.hcm_sep]
+        vcm = cm[self.hcm_sep:]
+        self.ring = setCorrectorStrengths(self.ring, 'x', hcm, True)
+        self.ring = setCorrectorStrengths(self.ring, 'y', vcm, True)
+
+        bpm, traj = getBPMreading(self.ring, use_guess=True)
+
+        # currently using the raw euclidean distance to element centres as loss,
+        # maybe should square?
+        cost = np.linalg.norm(traj, axis=-1)
+        cost = np.nan_to_num(cost, copy=False, nan=self.nan_cost)
+        cost = np.sum(np.abs(cost))
+
+        done = np.mean(rms(traj)) <= self.done_threshold
+        #done = cost <= done_threshold
+        cost = np.mean(rms(traj))
+
+        bpm = np.nan_to_num(bpm, copy=False, nan=self.nan_cost)
+        return cost, bpm, done
