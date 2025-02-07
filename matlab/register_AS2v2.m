@@ -29,23 +29,23 @@ function SC = register_AS2v2(SC,varargin)
     % ----------------------------------
     errorScale   = par.errorScale;
 
-    errorRoll    = errorScale*200e-6;    % baseline 100e-6
-    errorDx      = errorScale*60e-6;       % baseline 30e-6
-    errorDy      = errorScale*60e-6;       % baseline 30e-6
-    errorFSE     = errorScale*2e-3;       % baseline 1e-3
-    errorFSE_CFD = errorScale*2e-3;      % error on combined function quadrupole strength
-    errorFSE_B   = errorScale*2e-3;        % error on bending angle
+    errorRoll    = errorScale*50e-6;    % baseline 100e-6
+    errorDx      = errorScale*15e-6;       % baseline 30e-6
+    errorDy      = errorScale*15e-6;       % baseline 30e-6
+    errorFSE     = errorScale*1e-3;       % baseline 1e-3
+    errorFSE_CFD = errorScale*1e-3;      % error on combined function quadrupole strength
+    errorFSE_B   = errorScale*1e-3;        % error on bending angle
 
-    girderDx     = errorScale*60e-6;
-    girderDy     = errorScale*60e-6;
-    girderRoll   = errorScale*200e-6;% 200e-6;
+    girderDx     = errorScale*15e-6;
+    girderDy     = errorScale*15e-6;
+    girderRoll   = errorScale*50e-6;% 200e-6;
 
-    errorDxSX    = errorScale*60e-6;
-    errorDySX    = errorScale*60e-6;
+    errorDxSX    = errorScale*15e-6;
+    errorDySX    = errorScale*15e-6;
 
-    errorDxBPM   = errorScale*60e-6;
-    errorDyBPM   = errorScale*60e-6;
-    errorRollBPM = errorScale*200e-6;
+    errorDxBPM   = errorScale*0e-6;
+    errorDyBPM   = errorScale*0e-6;
+    errorRollBPM = errorScale*00e-6;
 
     % ----------------------------------
     % injection quads
