@@ -16,7 +16,7 @@ function createSeeds(nSeeds,varargin)
     runCorrection = getoption(varargin,'correction',1);
 
     if runParallel
-        parforArg = Inf;
+        parforArg = 4;
     else
         parforArg = 0;
     end
@@ -50,7 +50,7 @@ function createSeeds(nSeeds,varargin)
 
     SCsanityCheck(SC);
 
-    results = {};
+    % results = {};
     parfor (seed = 1:nSeeds, parforArg)
         if verbose
             fprintf('Processing seed %d...\n',seed);
@@ -69,8 +69,6 @@ function createSeeds(nSeeds,varargin)
             continue
         end
 
-        results{seed} = newSeed;
-
         % convert from matlab AT to pyAT
         %
         if ~isfolder(outdir)
@@ -79,6 +77,15 @@ function createSeeds(nSeeds,varargin)
         seedRing = newSeed.preCorrection;
         outfile = sprintf('%s/seed%d_preCorrection_pyAT',outdir,seed); 
         atwritepy(seedRing,'file',outfile);
+        
+        % Leo: I've integrated the second for-loop into this one so that we
+        % don't need to save the list of generated seeds anymore. It was causing
+        % a memory leak that made it infeasible to run for large nSeeds values. 
+
+        % The transparency violation was solved by putting the save() into a 
+        % separate function. credit: random stackoverflow guy
+        outfile = sprintf('%s/seed%d.mat',outdir,seed); 
+        saveSeed(outfile, newSeed);
 
         if runCorrection
             seedRing = newSeed.postCorrection;
@@ -92,11 +99,10 @@ function createSeeds(nSeeds,varargin)
         end
     end
 
-    for seed = 1:nSeeds
-        newSeed = results{seed};
-        outfile = sprintf('%s/seed%d.mat',outdir,seed); 
-        save(outfile,'-struct','newSeed');
-    end
+end
+
+function saveSeed(fname, seedToSave)
+    save(fname, '-struct', 'seedToSave');
 end
 
 function newSeed = createOneSeed(varargin)
