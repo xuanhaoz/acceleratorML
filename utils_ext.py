@@ -40,7 +40,7 @@ def getBPMreading(ring,makePlot=0,use_guess=False):
         T (len(ring),2): stacked array for relative position between beam trajectory and element centre
     """
     start = time.time()
-
+    # evaluate at -poles
     if not hasattr(getBPMreading, "guess") or use_guess == False:
         orbit, T = at.find_orbit6(ring,range(len(ring)))
     else:
@@ -275,15 +275,20 @@ NAN_COST = 1
 
 from multiprocessing.connection import Connection
 import pickle
+
 class WorkerProcess():
 
-    def __init__(self, path_str, seed, ds_size, conn: Connection, nan_cost: float, done_delta: float):
-        self.rng = np.random.default_rng(seed)
+    def __init__(self, path_str, rng_seed, ds_size, conn: Connection, nan_cost: float, done_delta: float, 
+                 history: bool):
+        self.rng = np.random.default_rng(rng_seed)
         self.conn = conn
         self.nan_cost = nan_cost
         self.done_delta = done_delta
         self.ds_size = ds_size
         self.path_str = path_str
+        self.history = history
+
+        print("child")
 
         self.loop()
 
@@ -293,21 +298,20 @@ class WorkerProcess():
             command, data = self.conn.recv()
 
             if command == "step":
-                self.cm += data
-                out = self.update_ring(self.cm)
+                out = self.update_ring(data)
                 done = out[2]
                 self.done = done
                 self.conn.send(out)
             
             elif command == "reset":
                 self.setup_ring()
-                out = self.update_ring(self.cm)
+                out = self.update_ring()
                 self.conn.send(out)
 
             elif command == "maybe_reset":
                 if self.done.item() == True:
                     self.setup_ring()
-                out = self.update_ring(self.cm)
+                out = self.update_ring()
                 self.conn.send(out)
                 
             elif command == "ping":
@@ -327,11 +331,24 @@ class WorkerProcess():
         vcm = getCorrectorStrengths(self.ring, 'y') 
         self.hcm_sep = len(hcm)
         self.cm = np.append(hcm, vcm)
-        
-        _, traj = getBPMreading(self.ring)
+
+        bpm, traj = getBPMreading(self.ring)
         self.done_threshold = np.mean(rms(traj)) - self.done_delta
 
-    def update_ring(self, cm):
+        # we are now giving the model access to the BPM readings + model output
+        # from the prev step
+        # hopefully it can glean more information about the lattice's errors
+        # from it
+        self.set_prev_out(np.zeros_like(self.cm))
+        self.prev_bpm = bpm.copy()
+
+        
+    def update_ring(self, data=None):
+        
+        if data is not None:
+            self.cm = self.cm + data
+        cm = self.cm        
+
         hcm = cm[:self.hcm_sep]
         vcm = cm[self.hcm_sep:]
         self.ring = setCorrectorStrengths(self.ring, 'x', hcm, True)
@@ -339,15 +356,27 @@ class WorkerProcess():
 
         bpm, traj = getBPMreading(self.ring, use_guess=True)
 
-        # currently using the raw euclidean distance to element centres as loss,
-        # maybe should square?
-        cost = np.linalg.norm(traj, axis=-1)
-        cost = np.nan_to_num(cost, copy=False, nan=self.nan_cost)
-        cost = np.sum(np.abs(cost))
 
-        done = np.mean(rms(traj)) <= self.done_threshold
-        #done = cost <= done_threshold
+        #cost = np.linalg.norm(traj, axis=-1)
+        #cost = np.nan_to_num(cost, copy=False, nan=self.nan_cost)
+        #cost = np.sum(np.abs(cost))
+
         cost = np.mean(rms(traj))
+        done = cost <= self.done_threshold
 
         bpm = np.nan_to_num(bpm, copy=False, nan=self.nan_cost)
-        return cost, bpm, done
+
+        out = np.concatenate([bpm, self.prev_model_out, self.prev_bpm], axis=-2)
+
+        if data is not None:
+            self.set_prev_out(data)
+        
+        self.prev_bpm = bpm.copy()
+
+        if self.history:
+            return cost, out, done
+        else:
+            return cost, bpm, done
+    
+    def set_prev_out(self, model_out):        
+        self.prev_model_out = np.stack([model_out, np.zeros_like(model_out)], axis=-1)
