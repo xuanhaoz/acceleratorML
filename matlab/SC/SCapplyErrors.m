@@ -47,6 +47,7 @@ function SC = SCapplyErrors(SC,varargin)
 	% Parse optional arguments
 	p = inputParser;
 	addOptional(p,'nSig',2);
+	addOptional(p,'verbose',0);
 	parse(p,varargin{:});
 	par=p.Results;
 
@@ -115,12 +116,16 @@ function SC = applyInjectionError(SC,par)
 	if isfield(SC.SIG,'staticInjectionZ')
 		% Apply systematic injection error
 		SC.INJ.Z0               = SC.INJ.Z0ideal + SC.SIG.staticInjectionZ(:) .* SCrandnc(par.nSig,6,1);
-		fprintf('Static injection error applied.\n');
+		if par.verbose
+			fprintf('Static injection error applied.\n');
+		end
 	end
 	if isfield(SC.SIG,'randomInjectionZ')
 		% Define random injection error (shot-to-shot)
 		SC.INJ.randomInjectionZ = SC.SIG.randomInjectionZ(:);
-		fprintf('Random injection error applied.\n');
+		if par.verbose
+			fprintf('Random injection error applied.\n');
+		end
 	end
 end
 
@@ -168,7 +173,9 @@ function SC = applyCircumferenceError(SC,par)
 		end
 		% Apply circumference error
 		SC.RING = SCscaleCircumference(SC.RING,circScaling,'rel');
-		fprintf('Circumference error applied.\n');
+		if par.verbose
+			fprintf('Circumference error applied.\n');
+		end
 	end
 end
 

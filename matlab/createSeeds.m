@@ -1,4 +1,4 @@
-function createSeeds(nSeeds)
+function createSeeds(nSeeds,varargin)
     addpath('SC');
     addpath('lattices');
     addpath('responseMatrices');
@@ -6,13 +6,27 @@ function createSeeds(nSeeds)
     global plotFunctionFlag
     global verbose
     plotFunctionFlag = 0;
-    verbose = 0;
+    verbose = 1;
+
+    % <runParallel = 1> requires parallel computing toolbox in matlab, automatically spawns parallel processes according to the number cores available
+    % <runCorrection = 1> will perform closed orbit correction on randomly initialised seed, this takes ~2.5 mins per seed
+    % without runCorrection, takes about 15 seconds per seed
+    %
+    runParallel = getoption(varargin,'parallel',0);
+    runCorrection = getoption(varargin,'correction',1);
+
+    if runParallel
+        parforArg = Inf;
+    else
+        parforArg = 0;
+    end
 
     outdir = './seeds';
 
     ring = AS2v225_15BPM_girderV4;
     RM.RM1 = load('v225_RM1.mat').RM1;
     RM.RM2 = load('v225_RM2.mat').RM2;
+    RM.MCO = load('idealCORM_AS2v225_15BPM_14H19VCM.mat').MCO;
 
     SC = SCinit(ring);
     SC = register_AS2v2(SC);
@@ -36,31 +50,97 @@ function createSeeds(nSeeds)
 
     SCsanityCheck(SC);
 
-    for seed = 1:nSeeds
-        fprintf('Processing seed %d...\n',seed);
-        clear result
+    results = {};
+    parfor (seed = 1:nSeeds, parforArg)
+        if verbose
+            fprintf('Processing seed %d...\n',seed);
+        end
+        % clear results
         runTime = tic;
         shuffleRNG(seed);
 
         try 
-            [~,results] = evalc('runSingleSeed(SC,''RM'',RM)');
+            % [~,results] = evalc('runSingleSeed(SC,''RM'',RM)');
+            newSeed = createOneSeed(SC,'runCorrection',runCorrection,'MCO',RM.MCO);
+
         catch ME
             fprintf('Seed %d failed\n',seed);
             disp(ME.message);
             continue
         end
 
-        seedRing = results.RFcorrection.RING;
+        results{seed} = newSeed;
 
         % convert from matlab AT to pyAT
         %
         if ~isfolder(outdir)
             mkdir(outdir);
         end
-        outfile = sprintf('%s/seed%d_pyAT',outdir,seed); 
+        seedRing = newSeed.preCorrection;
+        outfile = sprintf('%s/seed%d_preCorrection_pyAT',outdir,seed); 
         atwritepy(seedRing,'file',outfile);
 
+        if runCorrection
+            seedRing = newSeed.postCorrection;
+            outfile = sprintf('%s/seed%d_postCorrection_pyAT',outdir,seed); 
+            atwritepy(seedRing,'file',outfile);
+        end
+
         runTime = toc(runTime);
-        fprintf('Run time: %.1f mins\n',runTime/60);
+        if verbose
+            fprintf('Seed %d run time: %.1f mins\n',seed,runTime/60);
+        end
     end
+
+    for seed = 1:nSeeds
+        newSeed = results{seed};
+        outfile = sprintf('%s/seed%d.mat',outdir,seed); 
+        save(outfile,'-struct','newSeed');
+    end
+end
+
+function newSeed = createOneSeed(varargin)
+    SC = varargin{1};
+    runCorrection = getoption(varargin,'runCorrection',0);
+    MCO = getoption(varargin,'MCO',[]);
+
+    newSeed = struct();
+
+    validSeed = 0;
+    while ~validSeed
+        % repeat seed generation until closed orbit can be found
+        %
+        SC_seed = SCapplyErrors(SC);
+        newRing = SC_seed.RING;
+        [~,T] = evalc('findorbit6(newRing)');
+        validSeed = ~any(isnan(T));
+    end
+    newSeed.preCorrection = SC_seed.RING;
+
+    if runCorrection
+        SC = SC_seed;
+        SC.INJ.trackMode;
+
+        BPMords = SC.ORD.BPM;
+        CMords = SC.ORD.CM;
+
+        % check supplied MCO has the correct size
+        %
+        if ~(numel(MCO) == length(BPMords)*2 * (length(CMords{1}) + length(CMords{2})))
+            if verbose
+                fprintf('MCO does not match required size, calculating ideal MCO\n');
+            end
+            MCO = SCgetModelRM(SC,BPMords,CMords,'trackMode','ORB','useIdealRing',1);
+        end
+
+        eta = SCgetModelDispersion(SC,BPMords,SC.ORD.Cavity,'rfStep',5);
+        [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,'etaWeight',1e3,'fracSV',0.6);
+
+        if ~COexists
+            newSeed.postCorrection = 'Correction failed';
+        else
+            newSeed.postCorrection = SC.RING;
+        end
+    end
+
 end
