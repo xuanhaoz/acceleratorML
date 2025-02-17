@@ -14,9 +14,10 @@ function createSeeds(nSeeds,varargin)
     %
     runParallel = getoption(varargin,'parallel',0);
     runCorrection = getoption(varargin,'correction',1);
-
+    savePy = getoption(varargin,'savepy',0);
+    
     if runParallel
-        parforArg = 4;
+        parforArg = inf;
     else
         parforArg = 0;
     end
@@ -74,9 +75,12 @@ function createSeeds(nSeeds,varargin)
         if ~isfolder(outdir)
             mkdir(outdir);
         end
-        seedRing = newSeed.preCorrection;
-        outfile = sprintf('%s/seed%d_preCorrection_pyAT',outdir,seed); 
-        atwritepy(seedRing,'file',outfile);
+
+        if savePy
+            seedRing = newSeed.preCorrection;
+            outfile = sprintf('%s/seed%d_preCorrection_pyAT',outdir,seed); 
+            atwritepy(seedRing,'file',outfile);
+        end
         
         % Leo: I've integrated the second for-loop into this one so that we
         % don't need to save the list of generated seeds anymore. It was causing
@@ -87,7 +91,7 @@ function createSeeds(nSeeds,varargin)
         outfile = sprintf('%s/seed%d.mat',outdir,seed); 
         saveSeed(outfile, newSeed);
 
-        if runCorrection
+        if runCorrection && ~isa(newSeed.postCorrection, 'char') && savePy
             seedRing = newSeed.postCorrection;
             outfile = sprintf('%s/seed%d_postCorrection_pyAT',outdir,seed); 
             atwritepy(seedRing,'file',outfile);
