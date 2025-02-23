@@ -115,15 +115,6 @@ def main():
 
     logger.info("Testing model...")
     test_results = corrector.validate(test_seeds)
-    
-    # Print test results
-    logger.info("\nTest Results:")
-    avg_improvement = np.mean([r['total_improvement'] for r in test_results])
-    avg_loss = np.mean([r['final_loss'] for r in test_results])
-
-    logger.info(f"Average loss: {avg_loss:.6f}")
-    logger.info(f"Average orbit improvement: {avg_improvement:.2f}%")
-    logger.info(f"Average loss: {avg_loss:.6f}")
 
 
 if __name__ == "__main__":
