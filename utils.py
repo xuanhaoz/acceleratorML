@@ -193,6 +193,11 @@ def setCorrectorStrengths(ring,plane,setpoints):
                 ele.PolynomB[0] = setpoint
             case 'y':
                 ele.PolynomA[0] = setpoint
+        
+        if ele.PassMethod == 'CorrectorPass':
+            ele.KickAngle[0] = ele.PolynomB[0]
+            ele.KickAngle[1] = ele.PolynomA[0]
+
     return newRing
         
 # ------------------------------------------------
