@@ -24,6 +24,13 @@ function createSeeds(nSeeds,varargin)
 
     outdir = './seeds';
 
+    if ~isfolder(outdir)
+        mkdir(outdir);
+    end
+    
+    startIdx = length(dir([outdir, '/*.mat']));
+    fprintf('start index %d\n', startIdx);
+
     ring = AS2v225_15BPM_girderV4;
     RM.RM1 = load('v225_RM1.mat').RM1;
     RM.RM2 = load('v225_RM2.mat').RM2;
@@ -52,7 +59,7 @@ function createSeeds(nSeeds,varargin)
     SCsanityCheck(SC);
 
     % results = {};
-    parfor (seed = 1:nSeeds, parforArg)
+    parfor (seed = startIdx:nSeeds+startIdx, parforArg)
         if verbose
             fprintf('Processing seed %d...\n',seed);
         end
@@ -72,9 +79,6 @@ function createSeeds(nSeeds,varargin)
 
         % convert from matlab AT to pyAT
         %
-        if ~isfolder(outdir)
-            mkdir(outdir);
-        end
 
         if savePy
             seedRing = newSeed.preCorrection;
