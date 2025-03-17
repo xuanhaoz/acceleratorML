@@ -8,6 +8,7 @@ function [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,varargin)
     addOptional(p,'SV',0);
     addOptional(p,'fracSV',1);
     addOptional(p,'verbose',0);
+    addOptional(p,'buildTargetOrbit',0);
     parse(p,varargin{:});
     par = p.Results;
 
@@ -47,6 +48,12 @@ function [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,varargin)
 
         MinvCO = SCgetPinv([MCO par.etaWeight*eta],'alpha',alpha,'N',par.SV,'fracSV',par.fracSV);
 
+        if par.buildTargetOrbit
+            R0 = buildTargetOrbit(SC);
+        else
+            R0 = zeros(size(MCO,2),1);
+        end
+
         % check if closed orbit can be found, otherwise switch to pseudo orbit mode
         %
         [SC,COexists] = checkOrbit(SC,par.verbose);
@@ -54,7 +61,7 @@ function [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,varargin)
             return
         end
 
-        [CUR,ERROR] = SCfeedbackRun(SC,MinvCO,'target',0,'maxsteps',1000,'scaleDisp',par.etaWeight,'verbose',par.verbose,'eps',1e-6);
+        [CUR,ERROR] = SCfeedbackRun(SC,MinvCO,'target',0,'maxsteps',1000,'scaleDisp',par.etaWeight,'verbose',par.verbose,'eps',1e-6,'R0',R0);
 
         if ERROR & firstPass
             COexists = 0;
@@ -133,4 +140,17 @@ function [SC,COexists] = checkOrbit(SC,verbose)
         end
         COexists = 0;
 	end
+end
+
+function out = buildTargetOrbit(varargin)
+    SC = varargin{1};
+
+    ring0 = SC.IDEALRING;
+    bpm = find(atgetcells(ring0,'FamName','BPM'));
+    [ed,~] = atlinopt(ring0,0,1:length(ring0)+1);
+    CO = [ed.ClosedOrbit];
+
+    R0 = [CO(1,bpm) CO(3,bpm)];
+    out = R0;
+
 end
