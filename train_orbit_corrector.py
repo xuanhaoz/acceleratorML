@@ -6,6 +6,8 @@ import utils
 from tqdm import tqdm
 import logging
 import os
+import at
+import multiprocessing
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -34,41 +36,15 @@ def generate_training_data(seed_range=(1, 100), cache_dir='./data_cache'):
     logger.info(f"Generating new training data for seeds {seed_range[0]} to {seed_range[1]}")
     training_data = []
     
-    for seed_num in tqdm(range(seed_range[0], seed_range[1] + 1), 
-                        desc="Generating training data", 
-                        unit="seed"):
-        # Load pre-correction configuration
-        pre_seed_file = f'./matlab/seeds/seed{seed_num:d}_preCorrection_pyAT'
-        post_seed_file = f'./matlab/seeds/seed{seed_num:d}_postCorrection_pyAT'
-        
-        try:
-            with open(pre_seed_file, 'rb') as fid:
-                pre_ring = pickle.load(fid)
-            with open(post_seed_file, 'rb') as fid:
-                post_ring = pickle.load(fid)
-                
-            # Get BPM readings from pre-correction ring
-            bpm_readings, true_trajectory = utils.getBPMreading(pre_ring)
-            # Get target corrector values from pre-correction ring
-            initial_hcm = utils.getCorrectorStrengths(pre_ring, 'x')
-            initial_vcm = utils.getCorrectorStrengths(pre_ring, 'y')
-            initial_correctors = np.concatenate([initial_hcm, initial_vcm])
-            
-            # Get target corrector values from post-correction ring
-            target_hcm = utils.getCorrectorStrengths(post_ring, 'x')
-            target_vcm = utils.getCorrectorStrengths(post_ring, 'y')
-            target_corrections = np.concatenate([target_hcm, target_vcm])
-            
-            # Store the data
-            training_data.append((true_trajectory, initial_correctors, target_corrections))
-            
-        except FileNotFoundError:
-            logger.warning(f"Skipping seed {seed_num} - files not found")
-            continue
-        except Exception as e:
-            logger.error(f"Skipping seed {seed_num} - {e}")
-            continue
-    
+    # Load pre-correction configuration
+    with multiprocessing.Pool(16) as p:
+        training_data = list(tqdm(p.imap(pool_worker, [(f'./matlab/seeds/seed{seed_num:d}.mat', seed_num, logger)
+                                                        for seed_num in range(seed_range[0], seed_range[1] + 1)]),
+                                    total=seed_range[1] + 1 - seed_range[0],
+                                    desc="Generating training data",
+                                    unit="seed"))
+
+    training_data = [i for i in training_data if not isinstance(i[0], type(None))]
     # Save to cache
     training_data = np.array(training_data, dtype=object)
     logger.info(f"Saving data cache to {cache_file}")
@@ -76,15 +52,37 @@ def generate_training_data(seed_range=(1, 100), cache_dir='./data_cache'):
 
     return training_data
 
-
+def pool_worker(in_tuple):
+    seed_file, seed_num, logger = in_tuple
+    try:
+        pre_ring = at.load_mat(seed_file, check=False, use="preCorrection")
+        post_ring = at.load_mat(seed_file, check=False, use="postCorrection")
+            
+        # Get BPM readings from pre-correction ring
+        bpm_readings, true_trajectory = utils.getBPMreading(pre_ring)
+        # Get target corrector values from pre-correction ring
+        initial_hcm = utils.getCorrectorStrengths(pre_ring, 'x')
+        initial_vcm = utils.getCorrectorStrengths(pre_ring, 'y')
+        initial_correctors = np.concatenate([initial_hcm, initial_vcm])
+        
+        # Get target corrector values from post-correction ring
+        target_hcm = utils.getCorrectorStrengths(post_ring, 'x')
+        target_vcm = utils.getCorrectorStrengths(post_ring, 'y')
+        target_corrections = np.concatenate([target_hcm, target_vcm])
+        return bpm_readings, initial_correctors, target_corrections
+    except FileNotFoundError:
+        logger.warning(f"Skipping seed {seed_num} - files not found")
+        return None, None, None
+    except Exception as e:
+        logger.error(f"Skipping seed {seed_num} - {e}")
+        return None, None, None
 
 
 
 def main():
     # Load initial lattice as base configuration
-    lattice_file = './matlab/seeds/seed1_preCorrection_pyAT'
-    with open(lattice_file, 'rb') as fid:
-        base_ring = pickle.load(fid)
+    lattice_file = "./matlab/seeds/seed0.mat"
+    base_ring = at.load_mat(lattice_file, check=False, use="preCorrection")
     
     # Initialize orbit corrector
     logger.info("Initializing orbit corrector...")
@@ -94,9 +92,9 @@ def main():
     # Generate training and validation data
     logger.info("Generating training data...")
 
-    train_seeds = range(1, 801)
-    val_seeds = range(801, 811)
-    test_seeds = range(901, 1001)
+    train_seeds = range(16000)
+    val_seeds = range(16000, 16100)
+    test_seeds = range(18000, 18100)
     
     train_data = generate_training_data(seed_range=(train_seeds.start, train_seeds.stop - 1))
     

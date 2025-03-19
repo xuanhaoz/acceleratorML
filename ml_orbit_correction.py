@@ -5,6 +5,7 @@ import numpy as np
 from typing import List
 from tqdm import tqdm
 import pickle
+import at
 
 import utils
 from sklearn.preprocessing import StandardScaler
@@ -84,7 +85,7 @@ class OrbitCorrector:
     def _setup_model_params(self):
         """Setup model parameters from base ring"""
         bpm_readings, true_trajectory = utils.getBPMreading(self.base_ring)
-        self.n_true_trajectory_inputs = len(true_trajectory)
+        self.n_true_trajectory_inputs = len(bpm_readings)
 
         self.hcm = utils.getCorrectorStrengths(self.base_ring, 'x')
         self.vcm = utils.getCorrectorStrengths(self.base_ring, 'y')
@@ -173,7 +174,7 @@ class OrbitCorrector:
             train_losses.append(avg_train_loss)
 
             # Validation
-            if(epoch+1)%100==0:
+            if(epoch+1)%50==0:
                 self.model.eval()
                 with torch.no_grad():
                     self.validate(val_seeds)
@@ -190,19 +191,16 @@ class OrbitCorrector:
         pbar = tqdm(val_seeds, desc="Testing model")
         for seed_num in pbar:
             # Load pre and post correction rings
-            pre_seed_file = f'./matlab/seeds/seed{seed_num:d}_preCorrection_pyAT'
-            post_seed_file = f'./matlab/seeds/seed{seed_num:d}_postCorrection_pyAT'
+            lattice_file = f"./matlab/seeds/seed{seed_num:d}.mat"
 
             try:
-                with open(pre_seed_file, 'rb') as fid:
-                    pre_ring = pickle.load(fid)
-                with open(post_seed_file, 'rb') as fid:
-                    post_ring = pickle.load(fid)
+                pre_ring = at.load_mat(lattice_file, check=False, use="preCorrection")
+                post_ring = at.load_mat(lattice_file, check=False, use="postCorrection")
 
                 # Get initial state
                 [B0, T0] = utils.getBPMreading(pre_ring)
                 initial_rms = utils.rms(np.concatenate(T0))
-                initial_loss = sum(abs(utils.rms(B0) - utils.rms(T0)))
+                initial_loss = utils.rms(B0)
 
                 # Get expected metrics
                 target_hcm = utils.getCorrectorStrengths(post_ring, 'x')
@@ -211,7 +209,7 @@ class OrbitCorrector:
                 pre_ring = utils.setCorrectorStrengths(pre_ring, 'y',target_vcm)
                 [B1, T1] = utils.getBPMreading(pre_ring)
                 expected_rms = utils.rms(np.concatenate(T1))
-                expected_loss = sum(abs(utils.rms(B1) - utils.rms(T1)))
+                expected_loss = utils.rms(B1)
 
 
                 # Get current trajectory
@@ -232,7 +230,7 @@ class OrbitCorrector:
                 [B_new, T_new] = utils.getBPMreading(pre_ring)
 
                 new_rms = utils.rms(np.concatenate(T_new))
-                new_loss = sum(abs(utils.rms(B_new) - utils.rms(T_new)))
+                new_loss = utils.rms(B_new)
 
 
                 results.append({
