@@ -184,9 +184,6 @@ function newSeed = createOneSeed(varargin)
         else
             newSeed.postCorrection = SC.RING;
             newSeed.SCpostCorrection = SC;
-            figure(3171)
-            clf
-            plotBPMreading(newSeed.postCorrection,'verbose',1);
         end
     end
 
