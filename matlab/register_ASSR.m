@@ -34,8 +34,8 @@ function SC = register_ASSR(SC,varargin)
     errorDx      = errorScale*15e-6;       % baseline 30e-6
     errorDy      = errorScale*15e-6;       % baseline 30e-6
     errorFSE     = errorScale*1e-3;       % baseline 1e-3
-    errorFSE_CFD = errorScale*0;      % error on combined function quadrupole strength
-    errorFSE_B   = errorScale*0;        % error on bending angle
+    errorFSE_CFD = errorScale*1e-3;      % error on combined function quadrupole strength
+    errorFSE_B   = errorScale*1e-3;        % error on bending angle
 
     girderDx     = errorScale*15e-6;
     girderDy     = errorScale*15e-6;
@@ -44,9 +44,9 @@ function SC = register_ASSR(SC,varargin)
     errorDxSX    = errorScale*15e-6;
     errorDySX    = errorScale*15e-6;
 
-    errorDxBPM   = errorScale*0e-6;
-    errorDyBPM   = errorScale*0e-6;
-    errorRollBPM = errorScale*00e-6;
+    errorDxBPM   = errorScale*15e-6;
+    errorDyBPM   = errorScale*15e-6;
+    errorRollBPM = errorScale*50e-6;
 
     % ----------------------------------
     % injection quads
@@ -76,8 +76,8 @@ function SC = register_ASSR(SC,varargin)
     SC = SCregisterBPMs(SC, ords,...
     	'CalError', 0*0.05 * [1 1],... % x and y, relative
     	'Offset',   [errorDxBPM errorDyBPM],... % x and y, [m]
-    	'Noise',    0*1e-6 * [1 1],... % x and y, [m]
-    	'NoiseCO',  0*1e-7 * [1 1],... % x and y, [m]
+    	'Noise',    1*1e-6 * [1 1],... % x and y, [m]
+    	'NoiseCO',  1*1e-7 * [1 1],... % x and y, [m]
     	'Roll',     errorRollBPM);           % az, [rad]
     
     % ----------------------------------
@@ -95,13 +95,39 @@ function SC = register_ASSR(SC,varargin)
     % ----------------------------------
     % BENDs
     %
-    
     ords = SCgetOrds(SC.RING,'^b_left|^b_centre|^b_right');
     SC = SCregisterMagnets(SC,ords,...
-        'CalErrorB', {[0 errorFSE_CFD], 2},...      % rel error in quad strength, tied to bending angle
+        'BendingAngle', {errorFSE_B, 2});
+        % 'CalErrorB', {[0 errorFSE_CFD], 2},...      % rel error in quad strength, tied to bending angle
+    	% 'MagnetOffset',[errorDx errorDy 0],...  % x, y and z, [m]
+    	% 'MagnetRoll',errorRoll * [1 0 0]);      % az, ax and ay, [rad]
+    
+    
+    masterOrds = SCgetOrds(SC.RING,'b_left01');
+    getOrds = @(ele)(SCgetOrds(SC.RING,ele));
+    childOrds = [getOrds('b_left02');
+                getOrds('b_left03');
+                getOrds('b_left04');
+                getOrds('b_left05');
+                getOrds('b_centre01');
+                getOrds('b_centre02');
+                getOrds('b_centre03');
+                getOrds('b_centre04');
+                getOrds('b_centre05');
+                getOrds('b_centre06');
+                getOrds('b_centre07');
+                getOrds('b_right01');
+                getOrds('b_right02');
+                getOrds('b_right03');
+                getOrds('b_right04');
+                getOrds('b_right05');
+    ];
+    SC = SCregisterMagnets(SC,masterOrds,...
+        'CalErrorB', {[0 errorFSE_CFD 0 0], 2},...      % rel error in quad strength, tied to bending angle
         'BendingAngle', {errorFSE_B, 2},...
-    	'MagnetOffset',[0 0 0],...  % x, y and z, [m]
-    	'MagnetRoll',0 * [1 0 0]);      % az, ax and ay, [rad]
+    	'MagnetOffset',[errorDx errorDy 0],...  % x, y and z, [m]
+    	'MagnetRoll',errorRoll * [1 0 0],...
+        'MasterOf',childOrds);      % az, ax and ay, [rad]
     
     % ----------------------------------
     % Quads

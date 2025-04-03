@@ -15,7 +15,7 @@ function out = createSeeds(nSeeds,varargin)
     runParallel = getoption(varargin,'parallel',0);
     runCorrection = getoption(varargin,'correction',1);
     version = getoption(varargin,'version','225');
-    fracSV = getoption(varargin,'fracSV',0.69);
+    fracSV = getoption(varargin,'fracSV',1);
     scanVar = getoption(varargin,'scanVar',1);
 
     if runParallel
@@ -129,7 +129,6 @@ function out = createSeeds(nSeeds,varargin)
         save(outfile,'-struct','newSeed');
     end
 
-    out = newSeed.postCorrection;
 end
 
 function newSeed = createOneSeed(varargin)
@@ -142,7 +141,12 @@ function newSeed = createOneSeed(varargin)
     newSeed = struct();
 
     validSeed = 0;
+    attemptNum = 0;
     while ~validSeed
+        attemptNum = attemptNum + 1;
+        if attemptNum > 10
+            error('Unable to find closed orbit for uncorrected ring after 10 seeds');
+        end
         % repeat seed generation until closed orbit can be found
         %
         SC_seed = SCapplyErrors(SC);
@@ -150,7 +154,11 @@ function newSeed = createOneSeed(varargin)
         [~,T] = evalc('findorbit6(newRing)');
         validSeed = ~any(isnan(T));
     end
-    newSeed.preCorrection = SC_seed.RING;
+    
+    % for diagnostics
+    %
+    % newSeed.preCorrection = SC_seed.RING;
+    % newSeed.SCpreCorrection = SC_seed;
 
     if runCorrection
         SC = SC_seed;
@@ -175,6 +183,7 @@ function newSeed = createOneSeed(varargin)
             newSeed.postCorrection = 'Correction failed';
         else
             newSeed.postCorrection = SC.RING;
+            newSeed.SCpostCorrection = SC;
             figure(3171)
             clf
             plotBPMreading(newSeed.postCorrection,'verbose',1);

@@ -1,24 +1,30 @@
-for i = 1:length(sf)
-    ele = ring{sf(i)};
-    HCM(i) = ele.PolynomB(1)*ele.Length;
-end
+ring = assr4_splitbends;
+SC = SCinit(ring);
+SC = register_ASSR(SC);
+SC = SCapplyErrors(SC);
 
-for i = 1:length(sd)
-    ele = ring{sd(i)};
-    VCM(i) = ele.PolynomA(1)*ele.Length;
-end
 
-figure(1)
-clf
-subplot(2,1,1)
-plot(1:length(HCM),HCM,'ro','LineWidth',1.5);
-grid on
-xlabel('HCM number');ylabel('HCM kick [rad]')
+% for i = 1:length(sf)
+%     ele = ring{sf(i)};
+%     HCM(i) = ele.PolynomB(1)*ele.Length;
+% end
 
-subplot(2,1,2)
-plot(1:length(VCM),VCM,'ro','LineWidth',1.5);
-grid on
-xlabel('VCM number');ylabel('VCM kick [rad]')
+% for i = 1:length(sd)
+%     ele = ring{sd(i)};
+%     VCM(i) = ele.PolynomA(1)*ele.Length;
+% end
+
+% figure(1)
+% clf
+% subplot(2,1,1)
+% plot(1:length(HCM),HCM,'ro','LineWidth',1.5);
+% grid on
+% xlabel('HCM number');ylabel('HCM kick [rad]')
+
+% subplot(2,1,2)
+% plot(1:length(VCM),VCM,'ro','LineWidth',1.5);
+% grid on
+% xlabel('VCM number');ylabel('VCM kick [rad]')
 
 % res = {};
 % varList = [1];
