@@ -50,13 +50,35 @@ function SC = SCupdateMagnets(SC,varargin)
 	for ord=ords
 		SC = updateMagnets(SC,ord,ord);
 
-		% Check for Master/Child magnets and update children
+		% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+		% edited by F. Zhang 2025/03/18
+		% checking for master/child need to be moved after first pass of all magnets
+		% otherwise upon looping to child ords it's possible to overwrite master parameters
+		%
+		% ORIGINAL
+		% % Check for Master/Child magnets and update children
 		if isfield(SC.RING{ord},'MasterOf')
 			for childOrd=SC.RING{ord}.MasterOf
 				SC = updateMagnets(SC,ord,childOrd);
 			end
 		end
+		% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 	end
+
+	% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	% edited by F. Zhang 2025/03/18
+	% checking for master/child need to be moved after first pass of all magnets
+	% otherwise upon looping to child ords it's possible to overwrite master parameters
+	%
+	% for ord = ords
+	% 	% Check for Master/Child magnets and update children
+	% 	if isfield(SC.RING{ord},'MasterOf')
+	% 		for childOrd=SC.RING{ord}.MasterOf
+	% 			SC = updateMagnets(SC,ord,childOrd);
+	% 		end
+	% 	end
+	% end
+	% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 end
 
 

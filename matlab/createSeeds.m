@@ -1,4 +1,4 @@
-function createSeeds(nSeeds,varargin)
+function out = createSeeds(nSeeds,varargin)
     addpath('SC');
     addpath('lattices');
     addpath('responseMatrices');
@@ -14,6 +14,9 @@ function createSeeds(nSeeds,varargin)
     %
     runParallel = getoption(varargin,'parallel',0);
     runCorrection = getoption(varargin,'correction',1);
+    version = getoption(varargin,'version','225');
+    fracSV = getoption(varargin,'fracSV',1);
+    scanVar = getoption(varargin,'scanVar',1);
 
     if runParallel
         parforArg = Inf;
@@ -23,13 +26,41 @@ function createSeeds(nSeeds,varargin)
 
     outdir = './seeds';
 
-    ring = AS2v225_15BPM_girderV4;
-    RM.RM1 = load('v225_RM1.mat').RM1;
-    RM.RM2 = load('v225_RM2.mat').RM2;
-    RM.MCO = load('idealCORM_AS2v225_15BPM_14H19VCM.mat').MCO;
+
+    eleName = {};
+    eleAperture = {};
+
+    switch version
+        case '225'
+            ring = AS2v225_15BPM_girderV4;
+            RM.RM1 = load('v225_RM1.mat').RM1;
+            RM.RM2 = load('v225_RM2.mat').RM2;
+            RM.MCO = load('idealCORM_AS2v225_15BPM_14H19VCM.mat').MCO;
+
+            ords.drift = find(atgetcells(ring,'FamName','Drift'));
+            eleAperture.drift = 12.5e3 * [1 1]; % [m] drift
+            ords.magnet = find(atgetcells(ring,'FamName','CF|CD|B1|BDS|^QDS|^QMS|^SX|^SF|^SD|^SH|^OC'));
+            eleAperture.magnet = 12.5e3 * [1 1]; % [m] drift
+
+            f_register = @register_AS2v2;
+        case 'assr'
+            ring = assr4_splitbends;
+            RM.RM1 = load('assr_RM1.mat').RM1;
+            RM.RM2 = load('assr_RM2.mat').RM2;
+            RM.MCO = load('assr_idealCORM.mat').MCO;
+
+            ords.drift = find(atgetcells(ring,'PassMethod','DriftPass'));
+            eleAperture.drift = 12.5e3 * [1 1]; % [m] drift
+            ords.magnet = find(atgetcells(ring,'Class','Bend|Quadrupole|Sextupole'));
+            eleAperture.magnet = 12.5e3 * [1 1]; % [m] drift
+
+            f_register = @register_ASSR;
+        otherwise
+            error('lattice version not supported');
+    end
 
     SC = SCinit(ring);
-    SC = register_AS2v2(SC);
+    SC = f_register(SC);
 
     SC.INJ.beamSize = diag([20E-6, 10E-6, 10E-6, 5E-6, 1E-4, 1E-5].^2);
 
@@ -40,12 +71,12 @@ function createSeeds(nSeeds,varargin)
     SC.BPM.beamLostAt    = 0.6;  % relative
 
 
-    for ord=SCgetOrds(SC.RING, 'Drift')
-        SC.RING{ord}.EApertures = 12.5E+3 * [1 1]; % [m] drift
+    for ord=ords.drift'
+        SC.RING{ord}.EApertures = eleAperture.drift; % [m] drift
     end
 
-    for ord=SCgetOrds(SC.RING, 'CF|CD|B1|BDS|^QDS|^QMS|^SX|^SF|^SD|^SH|^OC')
-        SC.RING{ord}.EApertures = 12.5E+3 * [1 1]; % [m] magnet apertures
+    for ord=ords.magnet'
+        SC.RING{ord}.EApertures = eleAperture.magnet; % [m] magnet apertures
     end
 
     SCsanityCheck(SC);
@@ -61,7 +92,7 @@ function createSeeds(nSeeds,varargin)
 
         try 
             % [~,results] = evalc('runSingleSeed(SC,''RM'',RM)');
-            newSeed = createOneSeed(SC,'runCorrection',runCorrection,'MCO',RM.MCO);
+            newSeed = createOneSeed(SC,'runCorrection',runCorrection,'MCO',RM.MCO,'fracSV',fracSV);
 
         catch ME
             fprintf('Seed %d failed\n',seed);
@@ -77,12 +108,12 @@ function createSeeds(nSeeds,varargin)
             mkdir(outdir);
         end
         seedRing = newSeed.preCorrection;
-        outfile = sprintf('%s/seed%d_preCorrection_pyAT',outdir,seed); 
+        outfile = sprintf('%s/%s_seed%d_preCorrection_pyAT',outdir,version,seed); 
         atwritepy(seedRing,'file',outfile);
 
         if runCorrection
             seedRing = newSeed.postCorrection;
-            outfile = sprintf('%s/seed%d_postCorrection_pyAT',outdir,seed); 
+            outfile = sprintf('%s/%s_seed%d_postCorrection_pyAT',outdir,version,seed); 
             atwritepy(seedRing,'file',outfile);
         end
 
@@ -94,20 +125,28 @@ function createSeeds(nSeeds,varargin)
 
     for seed = 1:nSeeds
         newSeed = results{seed};
-        outfile = sprintf('%s/seed%d.mat',outdir,seed); 
+        outfile = sprintf('%s/%s_seed%d.mat',outdir,version,seed); 
         save(outfile,'-struct','newSeed');
     end
+
 end
 
 function newSeed = createOneSeed(varargin)
     SC = varargin{1};
     runCorrection = getoption(varargin,'runCorrection',0);
     MCO = getoption(varargin,'MCO',[]);
+    fracSV = getoption(varargin,'fracSV',1);
+    scanVar = getoption(varargin,'scanVar',1);
 
     newSeed = struct();
 
     validSeed = 0;
+    attemptNum = 0;
     while ~validSeed
+        attemptNum = attemptNum + 1;
+        if attemptNum > 10
+            error('Unable to find closed orbit for uncorrected ring after 10 seeds');
+        end
         % repeat seed generation until closed orbit can be found
         %
         SC_seed = SCapplyErrors(SC);
@@ -115,11 +154,15 @@ function newSeed = createOneSeed(varargin)
         [~,T] = evalc('findorbit6(newRing)');
         validSeed = ~any(isnan(T));
     end
-    newSeed.preCorrection = SC_seed.RING;
+    
+    % for diagnostics
+    %
+    % newSeed.preCorrection = SC_seed.RING;
+    % newSeed.SCpreCorrection = SC_seed;
 
     if runCorrection
         SC = SC_seed;
-        SC.INJ.trackMode;
+        SC.INJ.trackMode = 'ORB';
 
         BPMords = SC.ORD.BPM;
         CMords = SC.ORD.CM;
@@ -134,13 +177,31 @@ function newSeed = createOneSeed(varargin)
         end
 
         eta = SCgetModelDispersion(SC,BPMords,SC.ORD.Cavity,'rfStep',5);
-        [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,'etaWeight',1e3,'fracSV',0.6);
+        [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,'etaWeight',1,'fracSV',fracSV,'buildTargetOrbit',1);
 
         if ~COexists
             newSeed.postCorrection = 'Correction failed';
         else
             newSeed.postCorrection = SC.RING;
+            newSeed.SCpostCorrection = SC;
         end
     end
 
+end
+
+function makeResponseMatrices(varargin)
+    SC = varargin{1};
+    outdir = varargin{2};
+    version = varargin{3};
+
+    RM1 = SCgetModelRM(SC,SC.ORD.BPM,SC.ORD.CM,'nTurns',1,'useIdealRing',1);
+    RM2 = SCgetModelRM(SC,SC.ORD.BPM,SC.ORD.CM,'nTurns',2,'useIdealRing',1);
+    MCO = SCgetModelRM(SC,SC.ORD.BPM,SC.ORD.CM,'trackMode','ORB','useIdealRing',1);
+
+    outfile = sprintf('%s/%s_RM1.mat',outdir,version);
+    save(outfile,'RM1');
+    outfile = sprintf('%s/%s_RM2.mat',outdir,version);
+    save(outfile,'RM2');
+    outfile = sprintf('%s/%s_idealCORM.mat',outdir,version);
+    save(outfile,'MCO');
 end

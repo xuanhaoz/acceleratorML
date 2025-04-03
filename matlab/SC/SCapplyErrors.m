@@ -284,6 +284,22 @@ function SC = applyMagnetError(SC,par)
 				SC.RING{ord}.(field{1}) = rndn_cutoff(SC.SIG.Mag{ord}.(field{1}),par.nSig);
 			end
 		end
+
+		% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+		% Added by F. Zhang 2025/03/18
+		% Check for Master/Child magnets and apply offset and roll errors to be the same
+		% For ASSR split dipole implementation
+		%
+		duplicateMasterFields = {'CalErrorB','MagnetOffset','MagnetRoll'};
+		if isfield(SC.RING{ord},'MasterOf')
+			for childOrd=SC.RING{ord}.MasterOf
+				for f = 1:length(duplicateMasterFields)
+					field = duplicateMasterFields{f};
+					SC.RING{childOrd}.(field) = SC.RING{ord}.(field);
+				end
+			end
+		end
+		% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 		
 	end
 end
