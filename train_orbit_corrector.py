@@ -93,8 +93,8 @@ def main():
     logger.info("Generating training data...")
 
     train_seeds = range(16000)
-    val_seeds = range(16000, 16100)
-    test_seeds = range(18000, 18100)
+    val_seeds = range(16000, 16050)
+    test_seeds = range(16050, 16099)
     
     train_data = generate_training_data(seed_range=(train_seeds.start, train_seeds.stop - 1))
     
@@ -107,13 +107,14 @@ def main():
     corrector.train(
         train_data=train_data,
         val_seeds=val_seeds,
-        epochs=500,
-        batch_size=128
+        epochs=1000,
+        batch_size=64
     )
 
     logger.info("Testing model...")
     test_results = corrector.validate(test_seeds)
 
+    pickle.dump(corrector, open("model.p", mode="wb"))
 
 if __name__ == "__main__":
     main()

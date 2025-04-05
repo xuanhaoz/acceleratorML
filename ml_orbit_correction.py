@@ -10,6 +10,50 @@ import at
 import utils
 from sklearn.preprocessing import StandardScaler
 
+class TransformerActor(nn.Module):
+    def __init__(self, layers: int, hidden_dim: int, nheads: int, bpm_len: int, 
+                 cm_len: int, device="cpu"):
+        super().__init__()
+        self.layers = layers
+        self.hidden_dim = hidden_dim
+        self.nheads = nheads
+        self.bpm_len = bpm_len
+        self.cm_len = cm_len
+        self.device = device
+        
+        layer = torch.nn.TransformerEncoderLayer(hidden_dim, nheads, hidden_dim * 4, device=device, batch_first=True)
+        self.model = torch.nn.TransformerEncoder(layer, num_layers=layers)
+        self.bpm_ember = torch.nn.Embedding(num_embeddings=bpm_len, embedding_dim=hidden_dim, device=device)
+        self.offset_lin = torch.nn.Linear(2, hidden_dim, device=device)
+        self.prev_offset_lin = torch.nn.Linear(2, hidden_dim, device=device)
+
+        self.cm_lin = torch.nn.Linear(1, hidden_dim, device=device)
+        self.cm_ember = torch.nn.Embedding(num_embeddings=cm_len, embedding_dim=hidden_dim, device=device)
+        self.regr_head = torch.nn.Linear(hidden_dim, 1, device=device)
+        
+        self.bpm_inds = torch.tensor(list(range(self.bpm_len)), dtype=torch.long, device=self.device)       
+        self.bpm_ember = torch.nn.Embedding(num_embeddings=bpm_len, embedding_dim=hidden_dim, device=device)
+
+
+    def forward(self, bpm, cm):
+        cm = torch.transpose(cm, -1, -2)
+        bpm_emb = self.bpm_ember(self.bpm_inds)
+        offset_emb = self.offset_lin(bpm)
+        summed_bpm_emb = bpm_emb + offset_emb
+
+        cm_emb = self.cm_ember(torch.tensor(range(self.cm_len), dtype=torch.long, device=self.device))
+        setting_emb = self.cm_lin(cm)
+        summed_cm_emb = cm_emb + setting_emb
+
+        enc_in = torch.cat([summed_cm_emb, summed_bpm_emb], dim=-2)
+
+        model_out = self.model(enc_in)
+        model_out = model_out[..., :self.cm_len, :]
+        model_out = self.regr_head(model_out)
+        model_out = torch.squeeze(model_out, -1)
+        return model_out
+
+
 class OrbitCorrectionNN(nn.Module):
     def __init__(self, n_elements: int, n_correctors: int, dropout_rate: float = 0.5):
         """Neural Network for orbit correction using layers"""
@@ -73,7 +117,16 @@ class OrbitCorrector:
             dropout_rate=dropout_rate
         ).to(device)
 
-        self.optimizer = optim.Adam(self.model.parameters(), weight_decay=weight_decay)
+        self.model = TransformerActor(
+            layers=5, 
+            hidden_dim=128, 
+            nheads=4, 
+            bpm_len=self.n_true_trajectory_inputs, 
+            cm_len=self.n_correctors,
+            device=device
+        )
+
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4) #weight_decay=weight_decay)
         self.criterion = nn.MSELoss()
 
     def _init_scalers(self):
@@ -121,10 +174,7 @@ class OrbitCorrector:
             initial_correctors.reshape(1, -1)
         )
 
-        # Concatenate and flatten for model input
-        x = np.concatenate([normalized_traj.flatten(), normalized_init_corr.flatten()])
-
-        return torch.FloatTensor(x).to(self.device)
+        return torch.FloatTensor(normalized_traj).to(self.device), torch.FloatTensor(normalized_init_corr).to(self.device)
 
     def prepare_target(self, target_corrections: np.ndarray) -> torch.Tensor:
         """Normalize target corrections using fitted scaler"""
@@ -142,27 +192,31 @@ class OrbitCorrector:
 
         train_losses = []
         val_losses = []
-
+        results = []
+        best = 0
         for epoch in range(epochs):
             self.model.train()
             epoch_loss = 0
             batch_count = 0
 
             # Training loop
-            for i in range(0, len(train_data), batch_size):
+            for i in tqdm(range(0, len(train_data), batch_size)):
                 batch = train_data[i:i + batch_size]
 
                 # Prepare normalized inputs and targets
-                inputs = torch.stack([
+                inputs = [
                     self.prepare_input(b[0], b[1]) for b in batch
-                ])
+                ]
+                bpms = torch.stack([i[0] for i in inputs])
+                init_corrections = torch.stack([i[1] for i in inputs])
                 target_corrections = torch.stack([
                     self.prepare_target(b[2])[0] for b in batch
                 ])
 
                 self.optimizer.zero_grad()
-                predicted_corrections = self.model(inputs)
+                predicted_corrections = self.model(bpms, init_corrections)
 
+                #raise Exception(f"{predicted_corrections.shape}, {target_corrections.shape}")
                 loss = self.criterion(predicted_corrections, target_corrections)
                 loss.backward()
                 self.optimizer.step()
@@ -172,14 +226,19 @@ class OrbitCorrector:
 
             avg_train_loss = epoch_loss / batch_count
             train_losses.append(avg_train_loss)
+            pickle.dump(train_losses, open("train_losses.p", mode="wb"))
 
             # Validation
-            if(epoch+1)%50==0:
+            if(epoch+1)%10==0:
                 self.model.eval()
                 with torch.no_grad():
-                    self.validate(val_seeds)
-
-            if (epoch + 1) % 10 == 0:
+                    res = self.validate(val_seeds)
+                if np.mean([r['loss_improvement'] for r in res]) > best:
+                    best = np.mean([r['loss_improvement'] for r in res])
+                    pickle.dump(self, open("best_model.p", mode="wb"))
+                results.append(res)
+                pickle.dump(results, open("results.p", mode="wb"))
+            if (epoch + 1) % 1 == 0:
                 print(f'Epoch {epoch+1}/{epochs}:')
                 print(f'Training Loss: {avg_train_loss:.6f}')
 
@@ -218,7 +277,7 @@ class OrbitCorrector:
                 initial_correctors = np.concatenate([initial_hcm, initial_vcm])
 
                 # Get model predictions for corrector settings
-                predicted_corrections = self.predict_corrections(T0, initial_correctors)
+                predicted_corrections = self.predict_corrections(B0, initial_correctors)
 
                 # Apply predicted corrections
                 pre_ring = utils.setCorrectorStrengths(pre_ring, 'x',
@@ -257,8 +316,8 @@ class OrbitCorrector:
         self.model.eval()
         with torch.no_grad():
             true_trajectory_inputs = self.prepare_input(true_trajectory, initial_correctors)
-            true_trajectory_inputs = true_trajectory_inputs.unsqueeze(0)
-            predictions = self.model(true_trajectory_inputs)
+            true_trajectory_inputs = [i.unsqueeze(0) for i in true_trajectory_inputs]
+            predictions = self.model(*true_trajectory_inputs)
 
             # Denormalize predictions
             denormalized_predictions = self.corrector_scaler.inverse_transform(
