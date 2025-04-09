@@ -51,7 +51,7 @@ function [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,varargin)
         if par.buildTargetOrbit
             R0 = buildTargetOrbit(SC);
         else
-            R0 = zeros(size(MCO,2),1);
+            R0 = zeros(size(MCO,1),1);
         end
 
         % check if closed orbit can be found, otherwise switch to pseudo orbit mode
@@ -146,7 +146,7 @@ function out = buildTargetOrbit(varargin)
     SC = varargin{1};
 
     ring0 = SC.IDEALRING;
-    bpm = find(atgetcells(ring0,'FamName','BPM'));
+    bpm = find(atgetcells(ring0,'FamName','BPM.*'));
     [ed,~] = atlinopt(ring0,0,1:length(ring0)+1);
     CO = [ed.ClosedOrbit];
 

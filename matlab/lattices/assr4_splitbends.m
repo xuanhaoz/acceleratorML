@@ -32,6 +32,7 @@ function ring = assr4_splitbends(varargin)
 %    component was scaled so that the modeled chromaticity matches what we
 %    measure.
 
+disp('Loading AS storage ring');
 
 
 energy = 3E9;

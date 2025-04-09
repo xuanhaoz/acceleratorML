@@ -43,6 +43,7 @@ function out = createSeeds(nSeeds,varargin)
             eleAperture.magnet = 12.5e3 * [1 1]; % [m] drift
 
             f_register = @register_AS2v2;
+            buildTargetOrbit = 0;
         case 'assr'
             ring = assr4_splitbends;
             RM.RM1 = load('assr_RM1.mat').RM1;
@@ -55,6 +56,7 @@ function out = createSeeds(nSeeds,varargin)
             eleAperture.magnet = 12.5e3 * [1 1]; % [m] drift
 
             f_register = @register_ASSR;
+            buildTargetOrbit = 1;
         otherwise
             error('lattice version not supported');
     end
@@ -92,7 +94,7 @@ function out = createSeeds(nSeeds,varargin)
 
         try 
             % [~,results] = evalc('runSingleSeed(SC,''RM'',RM)');
-            newSeed = createOneSeed(SC,'runCorrection',runCorrection,'MCO',RM.MCO,'fracSV',fracSV);
+            newSeed = createOneSeed(SC,'runCorrection',runCorrection,'MCO',RM.MCO,'fracSV',fracSV,'buildTargetOrbit',buildTargetOrbit);
 
         catch ME
             fprintf('Seed %d failed\n',seed);
@@ -137,6 +139,7 @@ function newSeed = createOneSeed(varargin)
     MCO = getoption(varargin,'MCO',[]);
     fracSV = getoption(varargin,'fracSV',1);
     scanVar = getoption(varargin,'scanVar',1);
+    buildTargetOrbit = getoption(varargin,'buildTargetOrbit',1);
 
     newSeed = struct();
 
@@ -155,9 +158,9 @@ function newSeed = createOneSeed(varargin)
         validSeed = ~any(isnan(T));
     end
     
+    newSeed.preCorrection = SC_seed.RING;
     % for diagnostics
     %
-    % newSeed.preCorrection = SC_seed.RING;
     % newSeed.SCpreCorrection = SC_seed;
 
     if runCorrection
@@ -177,7 +180,7 @@ function newSeed = createOneSeed(varargin)
         end
 
         eta = SCgetModelDispersion(SC,BPMords,SC.ORD.Cavity,'rfStep',5);
-        [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,'etaWeight',1,'fracSV',fracSV,'buildTargetOrbit',1);
+        [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,'etaWeight',1,'fracSV',fracSV,'buildTargetOrbit',buildTargetOrbit);
 
         if ~COexists
             newSeed.postCorrection = 'Correction failed';
