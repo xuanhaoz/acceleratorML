@@ -17,6 +17,7 @@ function out = createSeeds(nSeeds,varargin)
     version = getoption(varargin,'version','225');
     fracSV = getoption(varargin,'fracSV',1);
     scanVar = getoption(varargin,'scanVar',1);
+    savePy = getoption(varargin,'savepy',0);
 
     if runParallel
         parforArg = Inf;
@@ -24,8 +25,9 @@ function out = createSeeds(nSeeds,varargin)
         parforArg = 0;
     end
 
-    outdir = './seeds';
-
+    outdir = append('./', char(version), '_seeds');
+    startIdx = length(dir([outdir, '/*.mat']));
+    fprintf('start index %d\n', startIdx);
 
     eleName = {};
     eleAperture = {};
@@ -84,7 +86,7 @@ function out = createSeeds(nSeeds,varargin)
     SCsanityCheck(SC);
 
     results = {};
-    parfor (seed = 1:nSeeds, parforArg)
+    parfor (seed = startIdx:nSeeds+startIdx, parforArg)
         if verbose
             fprintf('Processing seed %d...\n',seed);
         end
@@ -102,18 +104,30 @@ function out = createSeeds(nSeeds,varargin)
             continue
         end
 
-        results{seed} = newSeed;
+        % results{seed} = newSeed;
 
         % convert from matlab AT to pyAT
         %
         if ~isfolder(outdir)
             mkdir(outdir);
         end
-        seedRing = newSeed.preCorrection;
-        outfile = sprintf('%s/%s_seed%d_preCorrection_pyAT',outdir,version,seed); 
-        atwritepy(seedRing,'file',outfile);
 
-        if runCorrection
+        if savePy
+            seedRing = newSeed.preCorrection;
+            outfile = sprintf('%s/%s_seed%d_preCorrection_pyAT',outdir,version,seed); 
+            atwritepy(seedRing,'file',outfile);
+        end
+
+        % Leo: I've integrated the second for-loop into this one so that we
+        % don't need to save the list of generated seeds anymore. It was causing
+        % a memory leak that made it infeasible to run for large nSeeds values. 
+
+        % The transparency violation was solved by putting the save() into a 
+        % separate function. credit: random stackoverflow guy
+        outfile = sprintf('%s/seed%d.mat',outdir,seed); 
+        saveSeed(outfile, newSeed);
+
+        if runCorrection && ~isa(newSeed.postCorrection, 'char') && savePy
             seedRing = newSeed.postCorrection;
             outfile = sprintf('%s/%s_seed%d_postCorrection_pyAT',outdir,version,seed); 
             atwritepy(seedRing,'file',outfile);
@@ -125,12 +139,10 @@ function out = createSeeds(nSeeds,varargin)
         end
     end
 
-    for seed = 1:nSeeds
-        newSeed = results{seed};
-        outfile = sprintf('%s/%s_seed%d.mat',outdir,version,seed); 
-        save(outfile,'-struct','newSeed');
-    end
+end
 
+function saveSeed(fname, seedToSave)
+    save(fname, '-struct', 'seedToSave');
 end
 
 function newSeed = createOneSeed(varargin)

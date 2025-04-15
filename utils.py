@@ -38,6 +38,7 @@ def getBPMreading(ring,makePlot=0):
 
     bpm = ring.get_uint32_index(at.Monitor)
     if ~closedOrbitExists:
+        raise EOFError
         # track in single shot mode
         #
         nTurns = 1
@@ -155,10 +156,15 @@ def getCorrectorStrengths(ring,plane):
     for n,ele in enumerate(ring[ords]):
         match plane:
             case 'x':
-                polynom = ele.PolynomB[0]
+                if ele.FamName != "KICK":
+                    polynom = ele.PolynomB[0]
+                else:
+                    polynom = ele.KickAngle[0]
             case 'y':
-                polynom = ele.PolynomA[0]
-
+                if ele.FamName != "KICK":
+                    polynom = ele.PolynomA[0]
+                else:
+                    polynom = ele.KickAngle[1]
         monitor[n] = polynom
 
     return monitor
@@ -188,15 +194,19 @@ def setCorrectorStrengths(ring,plane,setpoints):
 
     for n,ele in enumerate(newRing[ords]):
         setpoint = setpoints[n]
-        match plane:
-            case 'x':
-                ele.PolynomB[0] = setpoint
-            case 'y':
-                ele.PolynomA[0] = setpoint
-        
-        if ele.PassMethod == 'CorrectorPass':
-            ele.KickAngle[0] = ele.PolynomB[0]
-            ele.KickAngle[1] = ele.PolynomA[0]
+        if ele.PassMethod != 'CorrectorPass':
+            match plane:
+                case 'x':
+                    ele.PolynomB[0] = setpoint
+                case 'y':
+                    ele.PolynomA[0] = setpoint
+            
+        else:
+            match plane:
+                case 'x':
+                    ele.KickAngle[0] = setpoint
+                case 'y':
+                    ele.KickAngle[1] = setpoint
 
     return newRing
         
