@@ -8,6 +8,7 @@ import logging
 import os
 import at
 import multiprocessing
+import glob
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -77,8 +78,6 @@ def pool_worker(in_tuple):
         logger.error(f"Skipping seed {seed_num} - {e}")
         return None, None, None
 
-
-
 def main():
     # Load initial lattice as base configuration
     lattice_file = "./matlab/seeds/seed0.mat"
@@ -99,19 +98,31 @@ def main():
     train_data = generate_training_data(seed_range=(train_seeds.start, train_seeds.stop - 1))
     
     # Log dataset sizes
-    logger.info(f"Training samples: {len(train_data)}")
+    logger.info(f"Initial training samples: {len(train_data)}")
     logger.info(f"Validation samples: {len(val_seeds)}")
     
-    # Train the model
-    logger.info(f"Training model on {device}...")
+    # Train the model with progressive augmentation
+    logger.info(f"Training model on {device} with progressive augmentation...")
     corrector.train(
         train_data=train_data,
         val_seeds=val_seeds,
-        epochs=500,
-        batch_size=128
+        epochs=100000,
+        batch_size=1024,
+        augment_paitience=2000
     )
 
     logger.info("Testing model...")
+    # Load the best model before final testing
+    logger.info("Loading best model for final testing...")
+    best_model_files = glob.glob('saved_models/best_loss_model_*.pt')
+    best_model_file = sorted(best_model_files, 
+                           key=lambda x: float(x.split('improvement_')[1].split('pct.pt')[0]), 
+                           reverse=True)[0]
+    
+    corrector.load_model_and_scalers(best_model_file)
+    improvement = float(best_model_file.split('improvement_')[1].split('pct.pt')[0])
+    logger.info(f"Loaded best model: {best_model_file} with {improvement:.2f}% improvement")
+    
     test_results = corrector.validate(test_seeds)
 
 
