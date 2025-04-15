@@ -46,11 +46,19 @@ class OrbitCorrectionNN(nn.Module):
 
 
 class OrbitCorrector:
-    def __init__(self, base_ring, device='cpu', dropout_rate=0.5, weight_decay=1e-5):
-        """Initialize orbit corrector with ML model"""
+    def __init__(self, base_ring, device='cpu', dropout_rate=0.5, weight_decay=1e-5, model_dir='./saved_models'):
+        """Initialize orbit corrector with ML model
+        Args:
+            base_ring: Base ring configuration
+            device: Device to run model on ('cpu' or 'cuda')
+            dropout_rate: Dropout rate for the neural network
+            weight_decay: Weight decay for optimizer
+            model_dir: Directory to save trained models
+        """
         self.base_ring = base_ring
         self.device = device
         self.weight_decay = weight_decay
+        self.model_dir = model_dir
 
         # Initialize scalers
         self._init_scalers()
@@ -127,7 +135,7 @@ class OrbitCorrector:
         return torch.FloatTensor(normalized_corrections).to(self.device)
 
 
-    def train(self, train_data, val_seeds, epochs=100, batch_size=32, augment_paitience=1000):
+    def train(self, train_data, val_seeds, epochs=100, batch_size=32, augment_paitience=1000, cache_dir='./data_cache', data_dir='./matlab/seeds'):
         """
         Train the neural network with normalized data and progressive augmentation
         
@@ -137,6 +145,8 @@ class OrbitCorrector:
             epochs: Total number of epochs
             batch_size: Batch size for training
             augment_paitience: How many epochs to wait for improvement before augmentation
+            cache_dir: Directory to store cached data
+            data_dir: Directory containing the seed files
         """
         # First fit the scalers on training data
         self.fit_scalers(train_data)
@@ -157,7 +167,7 @@ class OrbitCorrector:
         current_train_data = train_data.copy()
         
         # Create directory for saving models if it doesn't exist
-        os.makedirs('saved_models', exist_ok=True)
+        os.makedirs(self.model_dir, exist_ok=True)
 
         for epoch in range(epochs):
             self.model.train()
@@ -193,7 +203,7 @@ class OrbitCorrector:
             if(epoch+1)%50==0:
                 self.model.eval()
                 with torch.no_grad():
-                    val_results = self.validate(val_seeds, augmentation_counter+1)
+                    val_results = self.validate(val_seeds, augmentation_counter+1, data_dir)
                     
                     # Calculate average validation metrics
                     avg_loss_improvement = np.mean([r['loss_improvement'] for r in val_results])
@@ -201,7 +211,7 @@ class OrbitCorrector:
                     # Save if it's the best model so far
                     if avg_loss_improvement > best_loss_improvement:
                         best_loss_improvement = avg_loss_improvement
-                        model_path = f'saved_models/best_loss_model_epoch_{epoch+1}_improvement_{avg_loss_improvement:.2f}pct.pt'
+                        model_path = os.path.join(self.model_dir, f'best_loss_model_epoch_{epoch+1}_improvement_{avg_loss_improvement:.2f}pct.pt')
                         self.save_model_and_scalers(model_path)
                         best_model_path = model_path
                         has_improved_since_last_augmentation = True
@@ -230,6 +240,8 @@ class OrbitCorrector:
                     new_augmented_data = self.generate_augmented_training_data(
                         seed_range=(seed_start, seed_end),
                         model_path=best_model_path,
+                        cache_dir=cache_dir,
+                        data_dir=data_dir,
                         num_workers=12  # Use 12 cores
                     )
                     
@@ -295,7 +307,7 @@ class OrbitCorrector:
         
         print(f"Model and scalers loaded from {filepath}")
 
-    def validate(self, val_seeds, iteration=1):
+    def validate(self, val_seeds, iteration=1, data_dir='./matlab/seeds'):
         """Test trained model on test seeds and calculate losses using multiprocessing"""
         import multiprocessing
         
@@ -303,7 +315,7 @@ class OrbitCorrector:
         multiprocessing.set_start_method('spawn', force=True)
         
         # Prepare arguments for parallel processing
-        worker_args = [(seed_num, self, iteration) for seed_num in val_seeds]
+        worker_args = [(seed_num, self, iteration, data_dir) for seed_num in val_seeds]
         
         # Use multiprocessing to validate seeds in parallel
         with multiprocessing.Pool(processes=os.cpu_count()) as pool:
@@ -338,7 +350,7 @@ class OrbitCorrector:
             )
             return denormalized_predictions[0]
 
-    def generate_augmented_training_data(self, seed_range=(1, 100), model_path=None, cache_dir='./data_cache', num_workers=13):
+    def generate_augmented_training_data(self, seed_range=(1, 100), model_path=None, cache_dir='./data_cache', data_dir='./matlab/seeds', num_workers=13):
         """
         Generate augmented training data in parallel using multiple CPU cores
         
@@ -346,6 +358,7 @@ class OrbitCorrector:
             seed_range: Tuple of (start_seed, end_seed) inclusive
             model_path: Path to the saved model to use for augmentation
             cache_dir: Directory to store cached data
+            data_dir: Directory containing the seed files
             num_workers: Number of CPU cores to use for parallelization
         
         Returns:
@@ -409,7 +422,7 @@ class OrbitCorrector:
         with tqdm(total=total_seeds, desc="Augmenting data", unit="seed") as pbar:
             with multiprocessing.Pool(processes=min(num_workers, len(seed_batches))) as pool:
                 # Prepare worker arguments
-                worker_args = [(batch[0], batch[1], tmp_model_path, self.base_ring) for batch in seed_batches]
+                worker_args = [(batch[0], batch[1], tmp_model_path, self.base_ring, data_dir) for batch in seed_batches]
                 
                 # Process batches and update progress bar
                 for results, count in pool.imap_unordered(_augment_worker_process, worker_args):
@@ -443,7 +456,7 @@ def _augment_worker_process(args):
     Worker function for parallel data augmentation.
     Must be at module level to be picklable for multiprocessing.
     """
-    start_seed, end_seed, tmp_model_path, base_ring = args
+    start_seed, end_seed, tmp_model_path, base_ring, data_dir = args
     
     # Create a new OrbitCorrector instance for this worker
     worker_corrector = OrbitCorrector(base_ring, device='cpu')
@@ -469,7 +482,7 @@ def _augment_worker_process(args):
     for seed_num in range(start_seed, end_seed + 1):
         try:
             # Load pre and post correction rings
-            seed_file = f'./matlab/seeds/seed{seed_num:d}.mat'
+            seed_file = os.path.join(data_dir, f'seed{seed_num:d}.mat')
             pre_ring = at.load_mat(seed_file, check=False, use="preCorrection")
             post_ring = at.load_mat(seed_file, check=False, use="postCorrection")
             
@@ -509,11 +522,11 @@ def _augment_worker_process(args):
 # Add this function at module level for multiprocessing
 def _validate_worker(args):
     """Worker function for parallel validation processing"""
-    seed_num, corrector, iteration = args
+    seed_num, corrector, iteration, data_dir = args
     
     try:
         # Load pre and post correction rings
-        lattice_file = f"./matlab/seeds/seed{seed_num:d}.mat"
+        lattice_file = os.path.join(data_dir, f"seed{seed_num:d}.mat")
         pre_ring = at.load_mat(lattice_file, check=False, use="preCorrection")
         post_ring = at.load_mat(lattice_file, check=False, use="postCorrection")
 

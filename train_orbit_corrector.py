@@ -9,18 +9,20 @@ import os
 import at
 import multiprocessing
 import glob
+import argparse
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def generate_training_data(seed_range=(1, 100), cache_dir='./data_cache'):
+def generate_training_data(seed_range=(1, 100), cache_dir='./data_cache', data_dir='./matlab/seeds'):
     """
     Generate training data using pre and post correction seeds with caching
     Args:
         seed_range: Tuple of (start_seed, end_seed) inclusive
         cache_dir: Directory to store cached data
+        data_dir: Directory containing the seed files
     """
     # Create cache directory if it doesn't exist
     os.makedirs(cache_dir, exist_ok=True)
@@ -39,7 +41,7 @@ def generate_training_data(seed_range=(1, 100), cache_dir='./data_cache'):
     
     # Load pre-correction configuration
     with multiprocessing.Pool(16) as p:
-        training_data = list(tqdm(p.imap(pool_worker, [(f'./matlab/seeds/seed{seed_num:d}.mat', seed_num, logger)
+        training_data = list(tqdm(p.imap(pool_worker, [(os.path.join(data_dir, f'seed{seed_num:d}.mat'), seed_num, logger)
                                                         for seed_num in range(seed_range[0], seed_range[1] + 1)]),
                                     total=seed_range[1] + 1 - seed_range[0],
                                     desc="Generating training data",
@@ -79,14 +81,18 @@ def pool_worker(in_tuple):
         return None, None, None
 
 def main():
+    data_dir = './matlab/seeds'
+    cache_dir = './data_cache'
+    model_dir = './saved_models'
+
     # Load initial lattice as base configuration
-    lattice_file = "./matlab/seeds/seed0.mat"
+    lattice_file = os.path.join(data_dir, "seed0.mat")
     base_ring = at.load_mat(lattice_file, check=False, use="preCorrection")
     
     # Initialize orbit corrector
     logger.info("Initializing orbit corrector...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    corrector = OrbitCorrector(base_ring, device=device)
+    corrector = OrbitCorrector(base_ring, device=device, model_dir=model_dir)
     
     # Generate training and validation data
     logger.info("Generating training data...")
@@ -95,7 +101,9 @@ def main():
     val_seeds = range(16000, 16100)
     test_seeds = range(18000, 18100)
     
-    train_data = generate_training_data(seed_range=(train_seeds.start, train_seeds.stop - 1))
+    train_data = generate_training_data(seed_range=(train_seeds.start, train_seeds.stop - 1),
+                                      cache_dir=cache_dir,
+                                      data_dir=data_dir)
     
     # Log dataset sizes
     logger.info(f"Initial training samples: {len(train_data)}")
@@ -108,13 +116,15 @@ def main():
         val_seeds=val_seeds,
         epochs=100000,
         batch_size=1024,
-        augment_paitience=2000
+        augment_paitience=2000,
+        cache_dir=cache_dir,
+        data_dir=data_dir
     )
 
     logger.info("Testing model...")
     # Load the best model before final testing
     logger.info("Loading best model for final testing...")
-    best_model_files = glob.glob('saved_models/best_loss_model_*.pt')
+    best_model_files = glob.glob(os.path.join(model_dir, 'best_loss_model_*.pt'))
     best_model_file = sorted(best_model_files, 
                            key=lambda x: float(x.split('improvement_')[1].split('pct.pt')[0]), 
                            reverse=True)[0]
