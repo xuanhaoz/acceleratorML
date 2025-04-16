@@ -38,7 +38,6 @@ def getBPMreading(ring,makePlot=0):
 
     bpm = ring.get_uint32_index(at.Monitor)
     if ~closedOrbitExists:
-        raise EOFError
         # track in single shot mode
         #
         nTurns = 1
