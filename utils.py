@@ -65,7 +65,7 @@ def getBPMreading(ring,makePlot=0):
         # Do we want this nanmean here? This will bias bpm readings to shots that have small deviation
         # and ignore shots that have particle losses
         #
-        T = np.nanmean(Zout[:,:,:,0],axis=1).T
+        T = np.nanmean(Zout[:,:,:,0],axis=1).T            
         # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
         #
     else:
@@ -73,6 +73,9 @@ def getBPMreading(ring,makePlot=0):
         #
         T = at.find_orbit6(ring,range(len(ring)))
         T = T[1]
+
+    if np.isnan(T).any():
+        raise Exception("Complete particle loss")
 
     # calculate relative different between beam trajectory and element centre
     # adding in element offset and roll errors
@@ -133,7 +136,7 @@ def getBPMreading(ring,makePlot=0):
 
 # ------------------------------------------------
 #
-def getCorrectorStrengths(ring,plane):
+def getCorrectorStrengths(ring,plane,ver="assr"):
     # plane: x = horizontal, y = vertical
     #
     chv = ring.get_uint32_index(at.Corrector)
@@ -144,33 +147,33 @@ def getCorrectorStrengths(ring,plane):
             sf = ring.get_bool_index("SF*")
             sf = np.where(sf)[0]
             ords = sorted(np.append(chv,sf))
+            if ver == "assr":
+                ords = sorted(sf)
         case 'y':
             # defocusing sextupoels - ver. corr. (VCM)
             #
             sd = ring.get_bool_index("SD*")
             sd = np.where(sd)[0]
             ords = sorted(np.append(chv,sd))
+            if ver == "assr":
+                ords = sorted(sd)
 
     monitor = np.zeros(len(ords))
     for n,ele in enumerate(ring[ords]):
         match plane:
             case 'x':
-                if ele.FamName != "KICK":
-                    polynom = ele.PolynomB[0]
-                else:
-                    polynom = ele.KickAngle[0]
+                polynom = ele.PolynomB[0]
+
             case 'y':
-                if ele.FamName != "KICK":
-                    polynom = ele.PolynomA[0]
-                else:
-                    polynom = ele.KickAngle[1]
+                polynom = ele.PolynomA[0]
+
         monitor[n] = polynom
 
     return monitor
 
 # ------------------------------------------------
 #
-def setCorrectorStrengths(ring,plane,setpoints):
+def setCorrectorStrengths(ring,plane,setpoints,ver="assr"):
     # plane: 0 = horizontal, 1 = vertical
     #
     chv = ring.get_uint32_index(at.Corrector)
@@ -181,31 +184,31 @@ def setCorrectorStrengths(ring,plane,setpoints):
             sf = ring.get_bool_index("SF*")
             sf = np.where(sf)[0]
             ords = sorted(np.append(chv,sf))
+            if ver == "assr":
+                ords = sorted(sf)
         case 'y':
             # defocusing sextupoels - ver. corr. (VCM)
             #
             sd = ring.get_bool_index("SD*")
             sd = np.where(sd)[0]
             ords = sorted(np.append(chv,sd))
+            if ver == "assr":
+                ords = sorted(sd)
 
     assert len(ords) == len(setpoints), f"Ords have lenght {len(ords)} but setpoints have length {len(setpoints)}"
     newRing = deepcopy(ring)
 
     for n,ele in enumerate(newRing[ords]):
         setpoint = setpoints[n]
-        if ele.PassMethod != 'CorrectorPass':
-            match plane:
-                case 'x':
-                    ele.PolynomB[0] = setpoint
-                case 'y':
-                    ele.PolynomA[0] = setpoint
-            
-        else:
-            match plane:
-                case 'x':
-                    ele.KickAngle[0] = setpoint
-                case 'y':
-                    ele.KickAngle[1] = setpoint
+        match plane:
+            case 'x':
+                ele.PolynomB[0] = setpoint
+            case 'y':
+                ele.PolynomA[0] = setpoint
+        
+        if ele.PassMethod == 'CorrectorPass':
+            ele.KickAngle[0] = ele.PolynomB[0]
+            ele.KickAngle[1] = ele.PolynomA[0]
 
     return newRing
         
