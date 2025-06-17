@@ -1,0 +1,657 @@
+#!/usr/bin/env python
+#
+# $File$
+# $Revision$
+# $DateTime$
+# Last checked in by: $Author$
+#
+# Description
+# The beam_loss_monitor_analysis_manager program monitors the serial numbers
+#
+#
+# Copyright (c) 2023-2025 Australian Synchrotron
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# Licence as published by the Free Software Foundation; either
+# version 2.1 of the Licence, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public Licence for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# Licence along with this library; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+# Original author: Frank Zhang, Andrew Starritt
+# Maintained by:
+#
+# Contact details:
+# as-open-source@ansto.gov.au
+# 800 Blackburn Road, Clayton, Victoria 3168, Australia.
+#
+
+import click
+import epics
+import functools
+import os
+import sys
+import time
+import signal
+import numpy as np
+
+# print to standard error.
+#
+errput = functools.partial(print, file=sys.stderr)
+
+_version = "1.2.1"
+_program = ""
+_shutdown_requested = False
+_exit_code = 0
+
+
+# -----------------------------------------------------------------------------
+#
+def shutdown_has_been_requested():
+    return _shutdown_requested
+
+
+# -----------------------------------------------------------------------------
+#
+def exit_code():
+    return _exit_code
+
+
+# -----------------------------------------------------------------------------
+#
+def request_shutdown(exit_code=None):
+    global _shutdown_requested
+    global _exit_code
+
+    if exit_code is not None:
+        _exit_code = exit_code
+
+    _shutdown_requested = True
+
+
+# -----------------------------------------------------------------------------
+#
+def terminate_signal_handler(sig, _frame):
+    """ Handles sig int and sig term """
+
+    if sig == signal.SIGTERM:
+        signal_name = "SIGTERM"
+
+    elif sig == signal.SIGINT:
+        signal_name = "SIGINT"
+
+    else:
+        signal_name = "Signal " + str(sig)
+
+    print("%s received, initiating orderly shutdown" % signal_name)
+
+    request_shutdown(128 + sig)
+
+
+# -----------------------------------------------------------------------------
+#
+def signal_catch_setup():
+    """ Capture sig int and sig term """
+    signal.signal(signal.SIGTERM, terminate_signal_handler)
+    signal.signal(signal.SIGINT, terminate_signal_handler)
+
+
+# -----------------------------------------------------------------------------
+# These PVs are indexed by the serial number.
+# They are written to by this program.
+#
+serial_number_name_pvs = {}
+serial_number_off_on_pvs = {}
+
+
+# -----------------------------------------------------------------------------
+#
+def print_version(ctx, param, value):
+    """ Click parser helper function
+    """
+    if not value or ctx.resilient_parsing:
+        return
+
+    vi = sys.version_info
+    print("beam_loss_monitor_analysis_manager version: %s  (python %s.%s.%s)" %
+          (_version, vi.major, vi.minor, vi.micro))
+    ctx.exit()
+
+
+# -------------------------------------------------------------------------
+#
+blm_list = [f"SR{i:02d}BLM01" for i in range(1, 15)]
+
+preload_pv_list = {
+    "SR00BLM01:INTEGRATED_SLOW_LOSS": None,
+    "SR00BLM01:INTEGRATED_STRAIGHT_SLOW_LOSS": None,
+    "SR00BLM01:INTEGRATED_ARC_SLOW_LOSS": None,
+    "SR00BLM01:TOTAL_INJECTION_LOSS": None,
+    "SR00BLM01:TOTAL_TBT_LOSS": None,
+    "SR00BLM01:INJECTION_START_CALC": None,
+}
+
+current_sa_buffer = {}
+next_sa_buffer = {}
+
+
+# -------------------------------------------------------------------------
+#
+def check_pv_connection(pv_dict, wait_time=10.0):
+    """ Check all initialised PVs are connected
+        Wait for <wait_time> if some PVs are not yet connected
+        Print warning if PV still not connected after wait_time
+    """
+    all_pv_connected = True
+    first_pass = True
+    for pv_name,pv in pv_dict.items():
+        if pv:
+            if (not pv.connected) and first_pass:
+                time.sleep(wait_time)
+                first_pass = False
+                if pv.connected:
+                    continue
+                else:
+                    all_pv_connected = False
+                    print(f"Connection to PV: {pv_name} not established.")
+
+            elif not pv.connected:
+                all_pv_connected = False
+                print(f"Connection to PV: {pv_name} not established.")
+
+    if all_pv_connected:
+        print(f"All PV connected!")
+
+
+# -------------------------------------------------------------------------
+#
+def sa_connection_callback(pvname, conn, **kwd):
+    """ Callback function if BLM disconnects/reconnects
+        Remove/add PV name from monitor list if disconnects/reconnects
+    """
+    if (not conn) and (pvname in current_sa_buffer.keys()):
+        current_sa_buffer.pop(pvname)
+    elif conn and (pvname not in current_sa_buffer.keys()):
+        current_sa_buffer[pvname] = None
+
+
+# -------------------------------------------------------------------------
+#
+def sa_signal_callback(pvname, value, **kwd):
+    """ Ccallback function for new SA signal
+        Raise flag for new value for this channel
+        If flag already raised, store new value in buffer
+        Monitor value
+    """
+    # Do nothing for 5 seconds after each mode change back to decay mode
+    # Force ignore spike after Vgc adjustment
+    #
+    if _mode == "Injection" or time.time() - _last_injection_complete_time < 5.0:
+        return
+
+    if not current_sa_buffer[pvname]:
+        current_sa_buffer[pvname] = int(value)
+    elif not next_sa_buffer[pvname]:
+        next_sa_buffer[pvname] = int(value)
+    else:
+        # print("buffer overflow")
+        pass
+
+
+# -------------------------------------------------------------------------
+#
+def process_sa_buffer():
+    """ Integrate the SA values for every BLM device and push to the appropriate PVs on SR00IOC94
+    """
+    while not all(current_sa_buffer.values()):
+        # wait until all devices have updated
+        time.sleep(0.001)
+
+    # all devices and channels
+    integrated_slow_loss = sum(current_sa_buffer.values())
+    epics.caput("SR00BLM01:INTEGRATED_SLOW_LOSS", integrated_slow_loss)
+
+    # channel A's
+    integrated_straight_slow_loss = sum(
+        [val for key, val in current_sa_buffer.items() if key[-1] == "A"])
+    epics.caput("SR00BLM01:INTEGRATED_STRAIGHT_SLOW_LOSS", integrated_straight_slow_loss)
+
+    # channel B's
+    integrated_arc_slow_loss = sum(
+        [val for key, val in current_sa_buffer.items() if key[-1] == "B"])
+    epics.caput("SR00BLM01:INTEGRATED_ARC_SLOW_LOSS", integrated_arc_slow_loss)
+
+    # check if the next buffer is filled, move value to current buffer if filled and empty out next buffer
+    # empty out current buffer if no new values
+    for device, value in next_sa_buffer.items():
+        if value:
+            current_sa_buffer[device] = value
+        else:
+            current_sa_buffer[device] = None
+
+        next_sa_buffer[device] = None
+
+
+# -----------------------------------------------------------------------------
+#
+_last_injection_time = 0
+_last_injection_complete_time = 0
+_mode = "Decay"
+_injection_counter = 0
+
+# -----------------------------------------------------------------------------
+#
+def new_injection_callback(pvname, value, **kwd):
+    """ Monitor injection status and raise flag to process injection data on new injection
+    """
+    global _last_injection_time, _mode, _injection_counter, _last_injection_complete_time
+    if value == 1:
+        # wait for 2 seconds for injection to complete before processing data
+        # 
+        _mode = "Injection"
+        time.sleep(1)
+        _last_injection_time = time.time()
+        _injection_counter = 0
+    
+    if value == 2:
+        _mode = "Decay"
+        _last_injection_complete_time = time.time()
+        # print("Switch to Decay mode")
+    
+
+# -----------------------------------------------------------------------------
+#
+def process_injection_data():
+    """ Process BLM buffer for each injection
+        average injection loss over 1024 turns is first entry in $device:signals:average.$channel
+        turn by turn (TbT) loss is the waveform $device:signals:sum.$channel
+        This function sum over TbT loss for every device and write to SR00BLM01:TOTAL_TBT_LOSS
+        This function reads average injection loss for every device and write to array SR00BLM01:TOTAL_INJECTION_LOSS
+    """
+    average_loss_buffer = []
+    TbT_loss_buffer = []
+    disconnected_blm = []
+    for blm in blm_list:
+        avg_A_pv_name = f"{blm}:signals:average.A"
+        avg_B_pv_name = f"{blm}:signals:average.B"
+        avg_A = preload_pv_list[avg_A_pv_name]
+        avg_B = preload_pv_list[avg_B_pv_name]
+        if avg_A.connected:
+            average_loss_buffer.append(avg_A.get()[0])
+        else:
+            average_loss_buffer.append(0)
+
+        if avg_B.connected:
+            average_loss_buffer.append(avg_B.get()[0])
+        else:
+            average_loss_buffer.append(0)
+
+        sum_A_pv_name = f"{blm}:signals:sum.A"
+        sum_B_pv_name = f"{blm}:signals:sum.B"
+        sum_A = preload_pv_list[sum_A_pv_name]
+        sum_B = preload_pv_list[sum_B_pv_name]
+
+        if sum_A.connected:
+            TbT_loss_buffer.append(sum_A.get())
+        else:
+            disconnected_blm.append(f"{blm}_A")
+
+        if sum_B.connected:
+            TbT_loss_buffer.append(sum_B.get())
+        else:
+            disconnected_blm.append(f"{blm}_A")
+
+    total_TbT_loss = sum(TbT_loss_buffer)
+    preload_pv_list["SR00BLM01:TOTAL_INJECTION_LOSS"].put(average_loss_buffer, wait=True, timeout=2.0)
+    preload_pv_list["SR00BLM01:TOTAL_TBT_LOSS"].put(total_TbT_loss, wait=True, timeout=2.0)
+
+    normalisation_by_subtraction = True
+    if normalisation_by_subtraction:
+        # processing for normalised heatmap
+        # 
+        first_turn_buffer = np.array(TbT_loss_buffer)[:,0]    
+        sf = first_turn_buffer-min(first_turn_buffer)
+        sf = (sf * np.ones(np.shape(TbT_loss_buffer)).T).T
+
+        normalised_buffer = np.abs(TbT_loss_buffer - sf)
+        # normalised_buffer = TbT_loss_buffer
+        # 
+        normalised_buffer = np.log10(normalised_buffer)
+
+        iter_normalised_buffer = iter(normalised_buffer)
+
+        for blm in blm_list:
+            for ch in ["A","B"]:
+                normalised_sum_pv_name = f"{blm}:{ch}_NORMALISED_SIGNAL_SUM"
+                if f"{blm}_{ch}" in disconnected_blm:
+                    # if BLM disconnected at the time of initial processing, switch plotting array to zero
+                    #
+                    value = np.zeros(len(TbT_loss_buffer[0]))
+                else:
+                    value = next(iter_normalised_buffer)
+                preload_pv_list[normalised_sum_pv_name].put(value, wait=True, timeout=2.0)
+
+    normalisation_by_division = False
+    if normalisation_by_division:
+        first_turn_buffer = np.array(TbT_loss_buffer)[:,0]    
+        sf = np.average(first_turn_buffer)
+
+
+# -----------------------------------------------------------------------------
+#
+# This is the time threshold of saturated ADC in decay mode before a voltage gain adjustment occurs
+#
+_decay_continous_saturation_time = 1.0
+
+# This is the number of consecutive saturated injection cycles before a voltage gain adjustment occurs
+#
+_injection_consecutive_saturation_turns = 1     
+
+_decay_gain_voltage_saturated = False
+_injection_gain_voltage_saturated = False
+_gain_adjustment_in_progress = False
+
+maxadc_saturated_decay = {}
+maxadc_saturated_injection = {}
+
+
+# -----------------------------------------------------------------------------
+#
+def maxadc_callback(pvname, value, **kwd):
+    """ Checking for max ADC value, saturated if ADC > 8000
+        In decay mode, raise flag if saturated for more then 5 seconds
+        In injection mode, raise flag if saturated for 2 consecutive injections
+    """
+    if _gain_adjustment_in_progress:
+        return
+
+    # Do nothing for 5 seconds after the mode switch from injection to decay to ignore spike when Vgc is changed
+    #
+    if time.time() - _last_injection_complete_time < 5.0:
+        return
+    
+    if value > 8000:
+        # Injection mode
+        #
+        if _mode == "Injection":
+            if pvname not in maxadc_saturated_injection.keys():
+                maxadc_saturated_injection[pvname] = 0
+            else:
+                if maxadc_saturated_injection[pvname] < _injection_consecutive_saturation_turns-1:
+                    maxadc_saturated_injection[pvname] += 1
+                else:
+                    global _injection_gain_voltage_saturated
+                    _injection_gain_voltage_saturated = True
+
+        # Decay mode
+        #
+        else:
+            if pvname not in maxadc_saturated_decay.keys():
+                maxadc_saturated_decay[pvname] = time.time()
+            elif time.time() - maxadc_saturated_decay[pvname] > _decay_continous_saturation_time:
+                print(f"ADC saturated for more than {_decay_continous_saturation_time} seconds: {pvname}")
+                # Raise flag to trigger gain control adjustment 
+                #
+                global _decay_gain_voltage_saturated
+                _decay_gain_voltage_saturated = True
+
+    else:
+        # Reset if only saturated for 1 injection cycle
+        # 
+        if _mode == "Injection":
+            if pvname in maxadc_saturated_injection.keys():
+                if maxadc_saturated_injection[pvname] < _injection_consecutive_saturation_turns-1:
+                    maxadc_saturated_injection.pop(pvname)
+        
+        # reset if not saturated continuously in decay mode for 5 seconds
+        #
+        else:
+            if pvname in maxadc_saturated_decay.keys():
+                maxadc_saturated_decay.pop(pvname)
+
+
+# -----------------------------------------------------------------------------
+#
+def maxadc_connection_callback(pvname, conn, **kwd):
+    pass
+
+
+# -----------------------------------------------------------------------------
+#
+def auto_gain_adjust():
+    """ Auto adjust gain control voltage of BLMs when the ADC is saturated
+        Monitor the settings for both injection and decay modes independently
+    """
+    global _gain_adjustment_in_progress, maxadc_saturated_decay, maxadc_saturated_injection
+    global _decay_gain_voltage_saturated, _injection_gain_voltage_saturated
+    _gain_adjustment_in_progress = True
+
+
+    # Lower and upper limits for the auto gain adjustment script
+    #
+    lower_vgc = 0.3     # Below this the calibration no longer holds
+
+    if _decay_gain_voltage_saturated:
+        for device in maxadc_saturated_decay.keys():
+            parts = device.split(":")
+            blm = parts[0]
+            ch = parts[-1][0]
+
+            oldVgc = preload_pv_list[f"{blm}:DCY:bld:vgc:{ch}"].get()
+            if oldVgc <= lower_vgc:
+                print(f"Injection auto gain adjustment limit reached for {blm}_{ch}. Vgc: {oldVgc}")
+                continue
+
+            newVgc = oldVgc - 0.01
+            preload_pv_list[f"{blm}:DCY:bld:vgc:{ch}"].put(newVgc, wait=True, timeout=10.0)
+            if _mode == "Decay":
+                preload_pv_list[f"{blm}:bld:vgc:{ch}_sp"].put(newVgc, wait=True, timeout=10.0)
+
+            print(f"Decay mode gain updated for {blm}_{ch}. Old Vgc: {oldVgc} New Vgc: {newVgc}")
+
+        maxadc_saturated_decay = {}
+
+    if _injection_gain_voltage_saturated:
+        for device in maxadc_saturated_injection.keys():
+            parts = device.split(":")
+            blm = parts[0]
+            ch = parts[-1][0]
+
+            oldVgc = preload_pv_list[f"{blm}:INJ:bld:vgc:{ch}"].get()
+            if oldVgc <= lower_vgc:
+                print(f"Injection auto gain adjustment limit reached for {blm}_{ch}. Vgc: {oldVgc}")
+                continue
+
+            newVgc = oldVgc - 0.01
+            preload_pv_list[f"{blm}:INJ:bld:vgc:{ch}"].put(newVgc, wait=True, timeout=2.0)
+
+            print(f"Injection mode gain updated for {blm}_{ch}. Old Vgc: {oldVgc} New Vgc: {newVgc}")
+
+        maxadc_saturated_injection = {}
+
+    _gain_adjustment_in_progress = False
+    _decay_gain_voltage_saturated = False
+    _injection_gain_voltage_saturated = False
+
+
+# -----------------------------------------------------------------------------
+#
+context_settings = dict(help_option_names=['--help', '-h'],
+                        terminal_width=80,
+                        max_content_width=80)
+
+# -------------------------------------------------------------------------
+#
+@click.command(context_settings=context_settings,
+               epilog="""\b\t\b""")  # forces a gap at end of help
+#
+# -----------------------------------------------------------------------------
+#
+@click.option('--verbose', '-v',
+              is_flag=True,
+              help="""\b \
+Selects verbose output, mainly used for debugging. \
+The extra output is also usefull for bug reports.
+""",
+              show_default=True)
+#
+# -------------------------------------------------------------------------
+#
+@click.option('--version', '-V',
+              is_flag=True,
+              callback=print_version,
+              expose_value=False,
+              is_eager=True,
+              help="Show version and exit.")
+#
+# -------------------------------------------------------------------------
+#
+def main(verbose):
+    """ The beam_loss_monitor_analysis_manager program ....
+    """
+    print("Progarm starting")
+
+    for pv_name in preload_pv_list.keys():
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+
+    for blm in blm_list:
+        pv_name = f"{blm}:signals:sa.A"
+        current_sa_buffer[pv_name] = None
+        next_sa_buffer[pv_name] = None
+        preload_pv_list[pv_name] = epics.PV(pv_name,
+                                            callback=sa_signal_callback,
+                                            connection_callback=sa_connection_callback)
+        pv_name = f"{blm}:signals:sa.B"
+        current_sa_buffer[pv_name] = None
+        next_sa_buffer[pv_name] = None
+        preload_pv_list[pv_name] = epics.PV(pv_name,
+                                            callback=sa_signal_callback,
+                                            connection_callback=sa_connection_callback)
+
+        # auto gain adjust disabled in main analysis manager program
+        #
+        # pv_name = f"{blm}:maxadc:A_mon"
+        # preload_pv_list[pv_name] = epics.PV(pv_name,
+                                            # callback=maxadc_callback,
+                                            # connection_callback=maxadc_connection_callback)
+        # pv_name = f"{blm}:maxadc:B_mon"
+        # preload_pv_list[pv_name] = epics.PV(pv_name,
+                                            # callback=maxadc_callback,
+                                            # connection_callback=maxadc_connection_callback)
+
+        pv_name = f"{blm}:signals:average.A"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+        pv_name = f"{blm}:signals:average.B"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+
+        pv_name = f"{blm}:signals:sum.A"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+        pv_name = f"{blm}:signals:sum.B"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+
+        pv_name = f"{blm}:A_NORMALISED_SIGNAL_SUM"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+        pv_name = f"{blm}:B_NORMALISED_SIGNAL_SUM"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+
+        pv_name = f"{blm}:bld:vgc:A_sp"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+        pv_name = f"{blm}:bld:vgc:B_sp"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+
+        pv_name = f"{blm}:DCY:bld:vgc:A"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+        pv_name = f"{blm}:DCY:bld:vgc:B"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+
+        pv_name = f"{blm}:INJ:bld:vgc:A"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+        pv_name = f"{blm}:INJ:bld:vgc:B"
+        preload_pv_list[pv_name] = epics.PV(pv_name)
+
+    # Monitor injection status
+    #
+    pv_name = "SR00BLM01:MODE_SELECTION_CMD"
+    preload_pv_list[pv_name] = epics.PV(pv_name,
+                                        callback=new_injection_callback)
+
+    # Check PV connection and wait
+    #
+    check_pv_connection(preload_pv_list)
+
+
+    # Catch sig int/term
+    #
+    signal_catch_setup()
+
+    # The first update won't occur for 5 seconds.
+    # This is plenty of time of the PVS that will connect to actually connect.
+    #
+    print("Starting main program...")
+    while not shutdown_has_been_requested():
+        # counter system to enforce injection data processing at 1 Hz during injection cycle after beam dump
+        # _injection_counter reset to 0 at every new injection callback
+        # also prevents SA buffer processing during injection
+        #
+        global _injection_counter
+        while _mode == "Injection":
+            if _injection_counter == 0:
+                # print("Processing injection data...")
+                process_injection_data()
+                # print("Done.")
+                _injection_counter = (_injection_counter + 1) % 10
+
+            time.sleep(0.1)
+            # Only start counting 10 seconds after last injection
+            # This is to offset the decay time between a single shot top up back to baseline in decay mode
+            # And during continous fill up after a beam dump
+            #
+            if time.time() - _last_injection_time > 10.0:
+                _injection_counter = (_injection_counter + 1) % 10
+
+        # Set SA buffer processing rate at 10 Hz
+        #
+        process_sa_buffer()
+        start = time.time()
+        time.sleep(0.098)
+
+        # auto gain adjust disabled in main analysis manager program
+        #
+        # if _decay_gain_voltage_saturated or _injection_gain_voltage_saturated:
+            # print("Adjusting gain...")
+            # auto_gain_adjust()
+            # print("Done.")
+
+        # Force processing rate at 10 Hz by waiting, wait time around 0.002~0.001 secs
+        #
+        elapsed_time = time.time() - start
+        while elapsed_time < 0.1:
+            time.sleep(0.001)
+            elapsed_time = time.time() - start
+
+    print("Progarm complete\n")
+
+
+# -----------------------------------------------------------------------------
+#
+def call_cli():
+    """ Click wrapper function. This sets environment variables for click and
+        python 3, does no harm for python 2.
+    """
+    os.environ["LANG"] = "en_US.utf8"
+    os.environ["LC_ALL"] = "en_US.utf8"
+
+    main()
+
+
+if __name__ == "__main__":
+    call_cli()
+
+# end
