@@ -33,6 +33,19 @@ function out = createSeeds(nSeeds,varargin)
     eleAperture = {};
 
     switch version
+        case '225S01'
+            ring = AS2v225_S01;
+            RM.RM1 = load('v225S01_RM1.mat').RM1;
+            RM.RM2 = load('v225S01_RM2.mat').RM2;
+            RM.MCO = load('v225S01_MCO.mat').MCO;
+
+            ords.drift = find(atgetcells(ring,'FamName','Drift'));
+            eleAperture.drift = 12.5e3 * [1 1]; % [m] drift
+            ords.magnet = find(atgetcells(ring,'FamName','CF|CD|B1|BDS|^QDS|^QMS|^SX|^SF|^SD|^SH|^OC'));
+            eleAperture.magnet = 12.5e3 * [1 1]; % [m] drift
+
+            f_register = @register_AS2v2;
+            buildTargetOrbit = 0;
         case '225'
             ring = AS2v225_15BPM_girderV4;
             RM.RM1 = load('v225_RM1.mat').RM1;
@@ -192,7 +205,9 @@ function newSeed = createOneSeed(varargin)
         end
 
         eta = SCgetModelDispersion(SC,BPMords,SC.ORD.Cavity,'rfStep',5);
+        warning('off','MATLAB:illConditionedMatrix');
         [SC,COexists] = runOrbitCorrection_AS2(SC,MCO,eta,'etaWeight',1,'fracSV',fracSV,'buildTargetOrbit',buildTargetOrbit);
+        warning('on','MATLAB:illConditionedMatrix');
 
         if ~COexists
             newSeed.postCorrection = 'Correction failed';
